@@ -13,8 +13,8 @@ from session import InterviewSession, choice_prompt
 
 logger = logging.getLogger(__name__)
 
-IDLE_TIMEOUT = timedelta(minutes=30)
-TIMEOUT_CHECK_SECONDS = 300
+IDLE_TIMEOUT = timedelta(minutes=1)
+TIMEOUT_CHECK_SECONDS = 15
 
 START_BUTTON_CUSTOM_ID = "gorp:start_interview"
 START_KEYWORDS = {"apply", "start", "begin", "interview"}
@@ -22,7 +22,7 @@ START_KEYWORDS = {"apply", "start", "begin", "interview"}
 WELCOME_DM_TEXT = (
     "**Welcome to Greater Ontario Gaming!**\n"
     "Thanks for joining the community. To become an active member, please "
-    "complete our recruitment interview — it lives entirely here in DMs and "
+    "complete our recruitment interview - it lives entirely here in DMs and "
     "takes about 10 minutes.\n\n"
     "Click **Start Interview** below when you're ready. You can also type "
     "`apply` at any time to begin, or `cancel` / `restart` mid-interview."
@@ -34,7 +34,7 @@ INTERVIEW_INTRO_TEXT = (
     "• Type `restart` at any point to start over.\n"
     "• Type `cancel` at any point to stop without submitting.\n"
     "• If you have questions for staff *before* starting, ask in the server "
-    "first — once we begin, I'll only accept answers to the questions.\n\n"
+    "first - once we begin, I'll only accept answers to the questions.\n\n"
     "Here we go!"
 )
 
@@ -65,7 +65,7 @@ class ApplyView(discord.ui.View):
 
 def build_apply_embed() -> discord.Embed:
     return discord.Embed(
-        title="Greater Ontario Gaming — Recruitment",
+        title="Greater Ontario Gaming - Recruitment",
         description=(
             "Interested in joining GORP? Click **Start Interview** below and "
             "I'll DM you a short questionnaire. The whole thing takes about "
@@ -110,7 +110,7 @@ class InterviewCog(commands.Cog):
             try:
                 user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
                 await user.send(
-                    "Your interview has timed out after 30 minutes of inactivity. "
+                    "Your interview has timed out after 1 minute of inactivity. "
                     "Type `apply` to begin again."
                 )
             except (discord.HTTPException, discord.NotFound):
@@ -173,6 +173,16 @@ class InterviewCog(commands.Cog):
             await self._ask_next(user, session)
             return
 
+        current = session.current_question()
+        if current is not None and current.key == "knows_code" and text.strip() != "416":
+            await user.send(
+                "That is not the correct code. Please re-read the rules carefully. "
+                "Restarting the interview from the beginning."
+            )
+            session.restart()
+            await self._ask_next(user, session)
+            return
+
         error = session.submit_answer(text)
         if error:
             await user.send(error)
@@ -224,7 +234,7 @@ class InterviewCog(commands.Cog):
             return
 
         await interaction.response.send_message(
-            "Check your DMs — I've started the interview.", ephemeral=True
+            "Check your DMs - I've started the interview.", ephemeral=True
         )
         await self.start_for_user(user)
 
@@ -270,7 +280,7 @@ class InterviewCog(commands.Cog):
         self.sessions.pop(user.id, None)
         await user.send(
             "**Interview complete.** Your application has been submitted to "
-            "the GORP staff for review. You'll hear back soon — thank you."
+            "the GORP staff for review. You'll hear back soon - thank you."
         )
 
     async def _post_results_embed(self, record: dict) -> None:
@@ -293,7 +303,7 @@ class InterviewCog(commands.Cog):
     def _build_embed(self, record: dict) -> discord.Embed:
         answers = record["answers"]
         embed = discord.Embed(
-            title=f"New Application — {record['display_name']}",
+            title=f"New Application - {record['display_name']}",
             color=discord.Color.green(),
             timestamp=record["completed_at"],
         )
@@ -307,11 +317,11 @@ class InterviewCog(commands.Cog):
             inline=False,
         )
         for question in QUESTIONS:
-            raw = answers.get(question.key, "—")
+            raw = answers.get(question.key, "-")
             if isinstance(raw, list):
-                value = ", ".join(raw) if raw else "—"
+                value = ", ".join(raw) if raw else "-"
             else:
-                value = str(raw) if raw not in (None, "") else "—"
+                value = str(raw) if raw not in (None, "") else "-"
             if len(value) > 1024:
                 value = value[:1020] + "…"
             embed.add_field(

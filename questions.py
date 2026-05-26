@@ -23,15 +23,15 @@ class Question:
 
 
 DUAL_CLAN_POLICY = (
-    "**Dual Clan Policy** — While an active member of Greater Ontario Gaming you are "
+    "**Dual Clan Policy** - While an active member of Greater Ontario Gaming you are "
     "ALLOWED to be a part of another community. If you wish to dual clan, it is "
     "expected you will be active during our patrol hours starting at 7:00 PM EST. "
     "Being on other servers during our patrol hours will result in warnings, kicks, "
-    "or a ban — unless the daily patrol has been canceled for that day."
+    "or a ban - unless the daily patrol has been canceled for that day."
 )
 
 PATROL_TIMES_EXPLAINER = (
-    "**Patrol times** — Are you able to attend a minimum of 2 patrols a week for "
+    "**Patrol times** - Are you able to attend a minimum of 2 patrols a week for "
     "2 hours a patrol? Please be aware that failure to meet minimum patrol without "
     "notice for 2 weeks can result in removal."
 )
@@ -56,8 +56,8 @@ QUESTIONS: tuple[Question, ...] = (
     Question(
         key="knows_code",
         label="Knows the code from the rules",
-        prompt="What is the code found in the rules? Do you know it? (yes/no)",
-        kind="yes_no",
+        prompt="What is the code found in the rules?",
+        kind="text",
     ),
     Question(
         key="community_name",

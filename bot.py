@@ -104,14 +104,14 @@ class RecruiterBot(commands.Bot):
                 existing_msg = await channel.fetch_message(int(existing_id))
             except (discord.NotFound, discord.Forbidden, ValueError):
                 logger.info(
-                    "Previous Apply message %s in #%s is gone — reposting.",
+                    "Previous Apply message %s in #%s is gone - reposting.",
                     existing_id,
                     channel.name,
                 )
                 delete_state(self.config.db_path, state_key)
             else:
                 logger.info(
-                    "Apply button already present in #%s as message %s — reusing.",
+                    "Apply button already present in #%s as message %s - reusing.",
                     channel.name,
                     existing_msg.id,
                 )

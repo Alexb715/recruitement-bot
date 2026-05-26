@@ -15,7 +15,7 @@ The moment a new member joins your Discord server, the bot **automatically sends
 - A green **Start Interview** button that the new member can click whenever they're ready.
 - A reminder that they can type `apply` to begin or `cancel` / `restart` once the interview is underway.
 
-The new member does not need to find the bot, run any command, or know any keywords — the bot finds them. If the user has DMs from server members disabled, the bot logs a warning and silently skips them; nothing breaks, and the user can still kick off the interview by clicking the channel button (below) or DMing the bot with `apply`.
+The new member does not need to find the bot, run any command, or know any keywords - the bot finds them. If the user has DMs from server members disabled, the bot logs a warning and silently skips them; nothing breaks, and the user can still kick off the interview by clicking the channel button (below) or DMing the bot with `apply`.
 
 This is implemented by the `on_member_join` listener in `cogs/interview.py`. To disable auto-join (e.g. if you'd rather rely only on the channel button), comment out or remove that listener.
 
@@ -23,7 +23,7 @@ This is implemented by the `on_member_join` listener in `cogs/interview.py`. To 
 
 There are two ways to get this button into a channel:
 
-1. **Auto-post on startup (recommended).** Set `APPLY_CHANNEL_ID` in `.env` to the target channel's ID. The bot will automatically post the embed + button in that channel the first time it starts, remember the message ID in SQLite, and **reuse the same message across restarts** — no duplicates. If you (or staff) delete the message, the bot reposts a fresh one the next time it starts. Move it by changing `APPLY_CHANNEL_ID` and restarting.
+1. **Auto-post on startup (recommended).** Set `APPLY_CHANNEL_ID` in `.env` to the target channel's ID. The bot will automatically post the embed + button in that channel the first time it starts, remember the message ID in SQLite, and **reuse the same message across restarts** - no duplicates. If you (or staff) delete the message, the bot reposts a fresh one the next time it starts. Move it by changing `APPLY_CHANNEL_ID` and restarting.
 2. **Manually via slash command.** Leave `APPLY_CHANNEL_ID` blank and run **`/post-apply-message`** in any channel (Manage Server permission required). The bot posts the embed + button right there.
 
 The button itself is *persistent* either way: clicks keep working across bot restarts thanks to the registered `ApplyView` (`bot.py` calls `bot.add_view(ApplyView())` at startup).
@@ -36,7 +36,7 @@ The bot validates each answer based on its type:
 
 - **Yes/No** answers accept `yes`, `y`, `yeah`, `no`, `n`, `nope`, etc.
 - **Date of Birth** must be in `YYYY-MM-DD` format (a few other common formats are also accepted).
-- **Department** and **How did you find GORP?** are presented as numbered lists — applicants reply with the option number(s).
+- **Department** and **How did you find GORP?** are presented as numbered lists - applicants reply with the option number(s).
 - **Free-text** questions accept anything non-empty.
 
 If an answer fails validation, the bot explains what went wrong and re-asks the same question.
@@ -52,7 +52,7 @@ If the applicant goes idle for **30 minutes**, the session expires automatically
 
 ### Auto-fill identity
 
-The original Google Form asked the recruiter to copy and paste the applicant's Discord User ID and Discord tag. Because the bot is *running in Discord*, it already knows these — so it fills them in automatically and never asks. They still appear in the final application embed and in the saved record.
+The original Google Form asked the recruiter to copy and paste the applicant's Discord User ID and Discord tag. Because the bot is *running in Discord*, it already knows these - so it fills them in automatically and never asks. They still appear in the final application embed and in the saved record.
 
 ### Results delivery
 
@@ -70,10 +70,10 @@ When the applicant submits their final answer the bot:
 ### 1. Create the Discord application
 
 1. Go to <https://discord.com/developers/applications> and create a new application.
-2. Under **Bot**, add a bot and copy the **Token** — this is your `DISCORD_TOKEN`.
+2. Under **Bot**, add a bot and copy the **Token** - this is your `DISCORD_TOKEN`.
 3. **Enable the following Privileged Gateway Intents on the Bot page** (this is the most common setup mistake; without these, auto-join and DM answers will not work):
-   - `SERVER MEMBERS INTENT` — required for `on_member_join`.
-   - `MESSAGE CONTENT INTENT` — required to read DM answers.
+   - `SERVER MEMBERS INTENT` - required for `on_member_join`.
+   - `MESSAGE CONTENT INTENT` - required to read DM answers.
 4. Under **OAuth2 → URL Generator**, select scopes `bot` and `applications.commands`. Bot permissions needed:
    - Read Messages / View Channels
    - Send Messages
@@ -112,7 +112,7 @@ In the channel where you want the button to live, run:
 /post-apply-message
 ```
 
-That's it — the button persists across restarts.
+That's it - the button persists across restarts.
 
 ---
 

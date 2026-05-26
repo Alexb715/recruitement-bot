@@ -73,7 +73,7 @@ class InterviewSession:
 def _validate(question: Question, raw: str) -> tuple[Any, str | None]:
     text = raw.strip()
     if not text:
-        return None, "Please type a response — empty messages aren't accepted."
+        return None, "Please type a response - empty messages aren't accepted."
 
     if question.kind == "text":
         return text, None
