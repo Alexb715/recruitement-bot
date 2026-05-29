@@ -28,6 +28,15 @@ There are two ways to get this button into a channel:
 
 The button itself is *persistent* either way: clicks keep working across bot restarts thanks to the registered `ApplyView` (`bot.py` calls `bot.add_view(ApplyView())` at startup).
 
+### FAQ and Requirements messages
+
+The bot also maintains two static, informational messages the same way it maintains the Apply button: a **FAQ** embed and a **Requirements** embed. Each has two ways to get into a channel:
+
+1. **Auto-post on startup (recommended).** Set `FAQ_CHANNEL_ID` and/or `REQUIREMENTS_CHANNEL_ID` in `.env`. The bot posts the embed the first time it starts, remembers the message ID in SQLite, and **reuses the same message across restarts** - no duplicates. Delete the message and it reposts on the next start.
+2. **Manually via slash command.** Run **`/post-faq`** or **`/post-requirements`** in any channel (Manage Server permission required).
+
+The FAQ text can reference other channels and a support role as **clickable mentions**. Set `FAQ_INTERVIEW_REQUEST_CHANNEL_ID`, `FAQ_RULES_CHANNEL_ID`, `FAQ_OPP_RECRUITMENT_CHANNEL_ID`, and `FAQ_SUPPORT_ROLE_ID` in `.env` to wire them. Any left blank fall back to plain-text wording, so the FAQ always reads correctly. Because these mentions live inside the embed, they render as clickable links but never ping anyone. All FAQ and Requirements wording lives in `content.py`.
+
 ### DM interview flow
 
 Once started, the bot asks the applicant **20 questions, one at a time**, in DMs. The order matches the original Google Form (the Discord User ID / Discord info questions are skipped because the bot autofills them), with Rod's two additions (`What are your greatest strengths?` / `What are your greatest weaknesses?` in FiveM RP) inserted immediately after the **"Define respect"** question.
@@ -116,6 +125,46 @@ That's it - the button persists across restarts.
 
 ---
 
+## Running with Docker
+
+A `Dockerfile` and `docker-compose.yml` are included. The image runs as a non-root user on `python:3.14-slim` and reads all configuration from environment variables (no `.env` file is baked into the image).
+
+### Option A: docker compose (build locally)
+
+```bash
+cp .env.example .env        # fill in DISCORD_TOKEN, channel/role IDs, etc.
+docker compose up -d --build
+docker compose logs -f      # watch startup
+```
+
+The SQLite database persists in a named `recruiter-data` volume, so applications survive container restarts and rebuilds.
+
+### Option B: pull the published image from GHCR
+
+Every `vX.Y.Z` git tag publishes an image to the GitHub Container Registry:
+
+```bash
+docker run -d --name gorp-recruiter --restart unless-stopped \
+  --env-file .env \
+  -v gorp-recruiter-data:/app/data \
+  ghcr.io/alexb715/recruitement-bot:latest
+```
+
+Available tags: `latest`, the full version (`1.2.3`), the minor series (`1.2`), and the commit (`sha-<short>`).
+
+### Publishing a new image
+
+`.github/workflows/docker-publish.yml` builds and pushes to GHCR automatically when you push a version tag (it uses the built-in `GITHUB_TOKEN`, so no extra secrets are needed):
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The first publish creates the package as **private** under your account; make it public from the package's settings on GitHub if you want others to pull it. You can also run the workflow manually from the **Actions** tab.
+
+---
+
 ## Configuration reference
 
 All configuration lives in `.env` at the project root.
@@ -126,6 +175,12 @@ All configuration lives in `.env` at the project root.
 | `RESULTS_CHANNEL_ID` | yes | Numeric ID of the channel that receives the completed application embeds. | `1234567890` |
 | `RECRUITER_ROLE_ID` | yes | Numeric ID of the role pinged on every new application. | `1234567890` |
 | `APPLY_CHANNEL_ID` | no | If set, the bot auto-posts the Apply Here button in this channel on startup and reuses the same message across restarts. Leave blank to disable auto-post (use `/post-apply-message` manually instead). | `1234567890` |
+| `FAQ_CHANNEL_ID` | no | If set, the bot auto-posts the FAQ message in this channel on startup and reuses it across restarts. Leave blank to use `/post-faq` manually. | `1234567890` |
+| `REQUIREMENTS_CHANNEL_ID` | no | If set, the bot auto-posts the Requirements message in this channel on startup and reuses it across restarts. Leave blank to use `/post-requirements` manually. | `1234567890` |
+| `FAQ_INTERVIEW_REQUEST_CHANNEL_ID` | no | Channel rendered as a clickable mention in the FAQ's "How do I apply?" answer. Blank falls back to plain text. | `1234567890` |
+| `FAQ_RULES_CHANNEL_ID` | no | Channel rendered as a clickable mention in the FAQ's dual-clan-policy answer. Blank falls back to plain text. | `1234567890` |
+| `FAQ_OPP_RECRUITMENT_CHANNEL_ID` | no | Channel rendered as a clickable mention in the FAQ's subdivision answer. Blank falls back to plain text. | `1234567890` |
+| `FAQ_SUPPORT_ROLE_ID` | no | Role rendered as a clickable mention in the FAQ's "What if I need assistance?" answer. Blank falls back to plain text. | `1234567890` |
 | `DEV_GUILD_ID` | no | If set, slash commands sync only to this guild (instant). Leave blank for global sync. | `1234567890` |
 | `DB_PATH` | no | Relative or absolute path for the SQLite database. | `data/applications.db` (default) |
 
@@ -138,6 +193,8 @@ To find a channel/role ID: enable **Developer Mode** in Discord (Settings → Ad
 | Command | Permission | What it does |
 |---------|------------|--------------|
 | `/post-apply-message` | Manage Server | Posts the persistent Apply Here embed + button in the current channel. |
+| `/post-faq` | Manage Server | Posts the FAQ embed in the current channel. |
+| `/post-requirements` | Manage Server | Posts the Requirements embed in the current channel. |
 
 ---
 
@@ -186,12 +243,18 @@ Recruiter/
 ├── config.py           Loads .env into a typed Config.
 ├── db.py               SQLite schema + save/list/get helpers.
 ├── questions.py        Single source of truth for the question list.
+├── content.py          FAQ + Requirements message text and embed builders.
 ├── session.py          Per-applicant state machine + input validation.
 ├── cogs/
 │   ├── interview.py    Auto-join DM, Apply button view, DM message routing, completion flow.
 │   └── admin.py        /post-apply-message slash command.
 ├── requirements.txt
 ├── .env.example
+├── Dockerfile          Container image (python:3.14-slim, non-root).
+├── docker-compose.yml  Local run + named volume for the database.
+├── .github/
+│   └── workflows/
+│       └── docker-publish.yml   Builds + pushes to GHCR on version tags.
 └── data/
     └── applications.db (created on first run; gitignored)
 ```

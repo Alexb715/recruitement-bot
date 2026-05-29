@@ -9,6 +9,7 @@ from discord.ext import commands
 from cogs.admin import AdminCog
 from cogs.interview import ApplyView, InterviewCog, build_apply_embed
 from config import load_config
+from content import build_faq_embed, build_requirements_embed
 from db import delete_state, get_state, init_db, set_state
 
 
@@ -61,22 +62,56 @@ class RecruiterBot(commands.Bot):
                 len(synced),
             )
 
-        self.loop.create_task(self._auto_post_apply_button())
+        self.loop.create_task(self._auto_post_all())
 
     async def on_ready(self) -> None:
         assert self.user is not None
         logger.info("Logged in as %s (id=%s)", self.user, self.user.id)
 
-    async def _auto_post_apply_button(self) -> None:
-        """If APPLY_CHANNEL_ID is configured, ensure exactly one Apply Here
-        message exists in that channel. Reuses the previously-posted message
-        across restarts; reposts only if it has been deleted."""
+    async def _auto_post_all(self) -> None:
+        """Ensure each configured permanent message (Apply button, FAQ,
+        Requirements) exists exactly once in its channel. Reuses the
+        previously-posted message across restarts and reposts only if it has
+        been deleted. Runs once per process."""
         await self.wait_until_ready()
         if self._auto_post_done:
             return
         self._auto_post_done = True
 
-        channel_id = self.config.apply_channel_id
+        await self._auto_post_persistent(
+            channel_id=self.config.apply_channel_id,
+            state_prefix="apply_message",
+            embed_factory=build_apply_embed,
+            view=ApplyView(),
+            label="Apply button",
+        )
+        await self._auto_post_persistent(
+            channel_id=self.config.faq_channel_id,
+            state_prefix="faq_message",
+            embed_factory=lambda: build_faq_embed(self.config),
+            allowed_mentions=discord.AllowedMentions.none(),
+            label="FAQ",
+        )
+        await self._auto_post_persistent(
+            channel_id=self.config.requirements_channel_id,
+            state_prefix="requirements_message",
+            embed_factory=build_requirements_embed,
+            label="Requirements",
+        )
+
+    async def _auto_post_persistent(
+        self,
+        *,
+        channel_id: int | None,
+        state_prefix: str,
+        embed_factory,
+        view: discord.ui.View | None = None,
+        allowed_mentions: discord.AllowedMentions | None = None,
+        label: str,
+    ) -> None:
+        """Post a single persistent embed to `channel_id` and remember its id
+        under `state_prefix:{channel_id}`, reusing it across restarts. Skips
+        silently when `channel_id` is not configured."""
         if not channel_id:
             return
 
@@ -84,7 +119,8 @@ class RecruiterBot(commands.Bot):
             channel = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
         except (discord.NotFound, discord.Forbidden) as exc:
             logger.warning(
-                "APPLY_CHANNEL_ID=%s could not be loaded (%s); skipping auto-post.",
+                "%s channel %s could not be loaded (%s); skipping auto-post.",
+                label,
                 channel_id,
                 exc,
             )
@@ -92,43 +128,48 @@ class RecruiterBot(commands.Bot):
 
         if not isinstance(channel, (discord.TextChannel, discord.Thread)):
             logger.warning(
-                "APPLY_CHANNEL_ID=%s is not a text channel/thread; skipping auto-post.",
+                "%s channel %s is not a text channel/thread; skipping auto-post.",
+                label,
                 channel_id,
             )
             return
 
-        state_key = f"apply_message:{channel_id}"
+        state_key = f"{state_prefix}:{channel_id}"
         existing_id = get_state(self.config.db_path, state_key)
         if existing_id:
             try:
-                existing_msg = await channel.fetch_message(int(existing_id))
+                await channel.fetch_message(int(existing_id))
             except (discord.NotFound, discord.Forbidden, ValueError):
                 logger.info(
-                    "Previous Apply message %s in #%s is gone - reposting.",
+                    "Previous %s message %s in #%s is gone - reposting.",
+                    label,
                     existing_id,
                     channel.name,
                 )
                 delete_state(self.config.db_path, state_key)
             else:
                 logger.info(
-                    "Apply button already present in #%s as message %s - reusing.",
+                    "%s already present in #%s as message %s - reusing.",
+                    label,
                     channel.name,
-                    existing_msg.id,
+                    existing_id,
                 )
                 return
 
+        kwargs: dict = {"embed": embed_factory()}
+        if view is not None:
+            kwargs["view"] = view
+        if allowed_mentions is not None:
+            kwargs["allowed_mentions"] = allowed_mentions
+
         try:
-            posted = await channel.send(embed=build_apply_embed(), view=ApplyView())
+            posted = await channel.send(**kwargs)
         except discord.Forbidden:
-            logger.warning(
-                "No permission to send Apply message in #%s.", channel.name
-            )
+            logger.warning("No permission to send %s in #%s.", label, channel.name)
             return
 
         set_state(self.config.db_path, state_key, str(posted.id))
-        logger.info(
-            "Posted Apply button in #%s as message %s.", channel.name, posted.id
-        )
+        logger.info("Posted %s in #%s as message %s.", label, channel.name, posted.id)
 
 
 def main() -> None:

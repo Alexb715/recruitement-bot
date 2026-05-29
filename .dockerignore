@@ -1,0 +1,27 @@
+# Version control
+.git
+.gitignore
+
+# Python caches and virtualenvs
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Secrets and local data (provided at runtime via env + volume)
+.env
+data/
+
+# Dev tooling and docs not needed in the image
+.github/
+docs/
+*.md
+.vscode/
+.idea/
+.DS_Store
+
+# Docker build files themselves
+Dockerfile
+.dockerignore
+docker-compose.yml

@@ -15,6 +15,12 @@ class Config:
     results_channel_id: int
     recruiter_role_id: int
     apply_channel_id: int | None
+    faq_channel_id: int | None
+    requirements_channel_id: int | None
+    faq_interview_request_channel_id: int | None
+    faq_rules_channel_id: int | None
+    faq_opp_recruitment_channel_id: int | None
+    faq_support_role_id: int | None
     dev_guild_id: int | None
     db_path: Path
 
@@ -53,6 +59,12 @@ def load_config() -> Config:
         results_channel_id=_require_int("RESULTS_CHANNEL_ID"),
         recruiter_role_id=_require_int("RECRUITER_ROLE_ID"),
         apply_channel_id=_optional_int("APPLY_CHANNEL_ID"),
+        faq_channel_id=_optional_int("FAQ_CHANNEL_ID"),
+        requirements_channel_id=_optional_int("REQUIREMENTS_CHANNEL_ID"),
+        faq_interview_request_channel_id=_optional_int("FAQ_INTERVIEW_REQUEST_CHANNEL_ID"),
+        faq_rules_channel_id=_optional_int("FAQ_RULES_CHANNEL_ID"),
+        faq_opp_recruitment_channel_id=_optional_int("FAQ_OPP_RECRUITMENT_CHANNEL_ID"),
+        faq_support_role_id=_optional_int("FAQ_SUPPORT_ROLE_ID"),
         dev_guild_id=_optional_int("DEV_GUILD_ID"),
         db_path=db_path,
     )

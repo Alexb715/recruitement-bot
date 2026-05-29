@@ -1,0 +1,22 @@
+# Local development / self-hosting convenience.
+#
+#   cp .env.example .env   # then fill in DISCORD_TOKEN, channel/role IDs, etc.
+#   docker compose up -d --build
+#
+# To run the published image instead of building locally, replace `build: .`
+# with `image: ghcr.io/alexb715/recruitement-bot:latest` and run `docker compose pull`.
+services:
+  recruiter:
+    build: .
+    image: ghcr.io/alexb715/recruitement-bot:latest
+    container_name: gorp-recruiter
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # SQLite database persists in a named volume. The default DB_PATH
+      # (data/applications.db, relative to /app) resolves to /app/data here.
+      - recruiter-data:/app/data
+
+volumes:
+  recruiter-data:
