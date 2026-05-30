@@ -7,7 +7,13 @@ import discord
 from discord.ext import commands
 
 from cogs.admin import AdminCog
-from cogs.interview import ApplyView, InterviewCog, build_apply_embed
+from cogs.interview import (
+    AcceptDecisionButton,
+    ApplyView,
+    InterviewCog,
+    RejectDecisionButton,
+    build_apply_embed,
+)
 from config import load_config
 from content import build_faq_embed, build_requirements_embed
 from db import delete_state, get_state, init_db, set_state
@@ -36,6 +42,7 @@ class RecruiterBot(commands.Bot):
     async def setup_hook(self) -> None:
         init_db(self.config.db_path)
         self.add_view(ApplyView())
+        self.add_dynamic_items(AcceptDecisionButton, RejectDecisionButton)
         await self.add_cog(
             InterviewCog(
                 self,

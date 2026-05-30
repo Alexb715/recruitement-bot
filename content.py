@@ -10,12 +10,15 @@ aren't known until `.env` is loaded).
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 import discord
 
 logger = logging.getLogger(__name__)
 
 EMBED_DESCRIPTION_LIMIT = 4096
+
+REAPPLY_EMBARGO_DAYS = 14
 
 
 def _channel_mention(channel_id: int | None, fallback: str) -> str:
@@ -176,6 +179,102 @@ def build_faq_embed(config) -> discord.Embed:
         description=description,
         color=discord.Color.blurple(),
     )
+
+
+ACCEPTANCE_DM_INTRO = (
+    "**Welcome to Greater Ontario Roleplay!** 🎉\n"
+    "Your application has been **accepted**. Here's a quick orientation so you "
+    "know how the community works:\n\n"
+    "**How we patrol**\n"
+    "- We run **scheduled patrols** - keep an eye on the patrol-schedule channel "
+    "for upcoming sessions.\n"
+    "- You're expected to be active for at least **2 full patrols a week** "
+    "(4 hours minimum).\n"
+    "- Patrols are coordinated in Discord and on our TeamSpeak.\n\n"
+    "**Important channels to check**\n"
+    "- Announcements & rule updates\n"
+    "- Patrol schedule\n"
+    "- Your department's main channel (see below)\n"
+    "- Support / help if you ever get stuck\n\n"
+    "*(Real channel links will be shared with you in-server.)*"
+)
+
+# Per-department orientation. Keys must match the choice strings in
+# questions.py's `department` question exactly. These are intentionally
+# placeholder copies for the initial rollout - real point-of-contact roles,
+# channel IDs, and training schedules to be filled in by staff (see TODO.md).
+DEPARTMENT_ORIENTATION: dict[str, str] = {
+    "OPP": (
+        "**Next steps - OPP**\n"
+        "- TODO: name the OPP point-of-contact role.\n"
+        "- TODO: link the OPP recruit-training channel and ride-along signup.\n"
+        "- TODO: list sub-divisions a new member can pick from."
+    ),
+    "Fire/EMS": (
+        "**Next steps - Fire/EMS**\n"
+        "- TODO: name the Fire/EMS point-of-contact role.\n"
+        "- TODO: link the Fire/EMS onboarding channel.\n"
+        "- TODO: note when probationary shifts are scheduled."
+    ),
+    "Civilian Ops": (
+        "**Next steps - Civilian Ops**\n"
+        "- TODO: name the Civ Ops point-of-contact role.\n"
+        "- TODO: link the civ-ops channel and any character-approval thread.\n"
+        "- TODO: note any starter-character guidance."
+    ),
+    "Communications": (
+        "**Next steps - Communications**\n"
+        "- TODO: name the Comms point-of-contact role.\n"
+        "- TODO: link the dispatch/comms channel and CAD training docs.\n"
+        "- TODO: note the TeamSpeak rooms used during patrols."
+    ),
+}
+
+REJECTION_DM_BODY = (
+    "**Application update**\n"
+    "Thanks for your interest in Greater Ontario Roleplay. After reviewing your "
+    "application, we've decided not to move forward at this time.\n\n"
+    "You're welcome to reapply on {reapply_date} "
+    "(14 days from this decision). We hope to see another application from you "
+    "then."
+)
+
+
+def build_acceptance_dm(departments: list[str]) -> str:
+    """Build the acceptance DM body: fixed orientation intro plus a block for
+    each department the candidate selected. Unknown department strings are
+    skipped with a log warning (e.g. if the questions list changes but the
+    orientation copy doesn't)."""
+    parts: list[str] = [ACCEPTANCE_DM_INTRO]
+    seen: set[str] = set()
+    for dept in departments or []:
+        if dept in seen:
+            continue
+        seen.add(dept)
+        block = DEPARTMENT_ORIENTATION.get(dept)
+        if block is None:
+            logger.warning(
+                "No DEPARTMENT_ORIENTATION entry for %r; skipping in DM.", dept
+            )
+            continue
+        parts.append(block)
+    if len(parts) == 1:
+        parts.append(
+            "*(No department-specific next steps available - a recruiter will "
+            "reach out directly.)*"
+        )
+    return "\n\n".join(parts)
+
+
+def build_rejection_dm(reapply_at: datetime, reason: str | None) -> str:
+    """Build the rejection DM body. `reapply_at` is rendered as a Discord
+    timestamp so it localizes to each viewer's timezone; optional `reason` is
+    appended verbatim when staff provided one."""
+    timestamp = f"<t:{int(reapply_at.timestamp())}:D>"
+    body = REJECTION_DM_BODY.format(reapply_date=timestamp)
+    if reason:
+        body = f"{body}\n\n**Note from staff:** {reason}"
+    return body
 
 
 def build_requirements_embed() -> discord.Embed:

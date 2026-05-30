@@ -7,13 +7,16 @@ from typing import Any, Iterator
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS applications (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id       TEXT    NOT NULL,
-    username      TEXT    NOT NULL,
-    started_at    TEXT    NOT NULL,
-    completed_at  TEXT    NOT NULL,
-    status        TEXT    NOT NULL,
-    answers_json  TEXT    NOT NULL
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         TEXT    NOT NULL,
+    username        TEXT    NOT NULL,
+    started_at      TEXT    NOT NULL,
+    completed_at    TEXT    NOT NULL,
+    status          TEXT    NOT NULL,
+    answers_json    TEXT    NOT NULL,
+    decided_at      TEXT,
+    decided_by      TEXT,
+    decision_reason TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_applications_user_id
@@ -28,11 +31,28 @@ CREATE TABLE IF NOT EXISTS bot_state (
 );
 """
 
+# Columns added after the initial schema. Applied via ALTER TABLE on startup so
+# databases created before the decision-tracking feature pick them up without a
+# separate migration step.
+_DECISION_COLUMNS = (
+    ("decided_at", "TEXT"),
+    ("decided_by", "TEXT"),
+    ("decision_reason", "TEXT"),
+)
+
 
 def init_db(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with _connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        for column, ctype in _DECISION_COLUMNS:
+            try:
+                conn.execute(
+                    f"ALTER TABLE applications ADD COLUMN {column} {ctype}"
+                )
+            except sqlite3.OperationalError:
+                # Column already exists — SQLite has no ADD COLUMN IF NOT EXISTS.
+                pass
 
 
 @contextmanager
@@ -99,6 +119,49 @@ def get_application(db_path: Path, application_id: int) -> dict[str, Any] | None
     record = dict(row)
     record["answers"] = json.loads(record.pop("answers_json"))
     return record
+
+
+def set_application_decision(
+    db_path: Path,
+    *,
+    application_id: int,
+    status: str,
+    decided_by: int,
+    decided_at: datetime,
+    reason: str | None = None,
+) -> None:
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE applications
+            SET status = ?, decided_at = ?, decided_by = ?, decision_reason = ?
+            WHERE id = ?
+            """,
+            (
+                status,
+                decided_at.isoformat(),
+                str(decided_by),
+                reason,
+                application_id,
+            ),
+        )
+
+
+def latest_rejection_for_user(
+    db_path: Path, user_id: int
+) -> dict[str, Any] | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT id, decided_at, decision_reason
+            FROM applications
+            WHERE user_id = ? AND status = 'rejected' AND decided_at IS NOT NULL
+            ORDER BY decided_at DESC
+            LIMIT 1
+            """,
+            (str(user_id),),
+        ).fetchone()
+    return dict(row) if row is not None else None
 
 
 def get_state(db_path: Path, key: str) -> str | None:

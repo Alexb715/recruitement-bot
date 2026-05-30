@@ -1,13 +1,24 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import discord
 from discord.ext import commands, tasks
 
-from db import save_application
+from content import (
+    REAPPLY_EMBARGO_DAYS,
+    build_acceptance_dm,
+    build_rejection_dm,
+)
+from db import (
+    get_application,
+    latest_rejection_for_user,
+    save_application,
+    set_application_decision,
+)
 from questions import QUESTIONS, Question
 from session import InterviewSession, choice_prompt
 
@@ -76,6 +87,121 @@ def build_apply_embed() -> discord.Embed:
         ),
         color=discord.Color.blurple(),
     )
+
+
+# --- Decision buttons (Accept / Reject on staff-channel application embeds) ---
+#
+# These use DynamicItem so a single class handles every application_id baked
+# into the custom_id. On startup the bot registers the two classes via
+# `add_dynamic_items`, which lets the buttons survive bot restarts without
+# tracking each message individually.
+
+ACCEPT_CUSTOM_ID_TEMPLATE = r"gorp:accept_app:(?P<app_id>\d+)"
+REJECT_CUSTOM_ID_TEMPLATE = r"gorp:reject_app:(?P<app_id>\d+)"
+
+
+class AcceptDecisionButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=ACCEPT_CUSTOM_ID_TEMPLATE,
+):
+    def __init__(self, app_id: int) -> None:
+        super().__init__(
+            discord.ui.Button(
+                label="Accept",
+                style=discord.ButtonStyle.success,
+                custom_id=f"gorp:accept_app:{app_id}",
+            )
+        )
+        self.app_id = app_id
+
+    @classmethod
+    async def from_custom_id(
+        cls,
+        interaction: discord.Interaction,
+        item: discord.ui.Button,
+        match: re.Match[str],
+    ) -> "AcceptDecisionButton":
+        return cls(int(match["app_id"]))
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        cog = interaction.client.get_cog("InterviewCog")
+        if not isinstance(cog, InterviewCog):
+            await interaction.response.send_message(
+                "The interview system isn't available right now.", ephemeral=True
+            )
+            return
+        await cog.handle_accept(interaction, self.app_id)
+
+
+class RejectDecisionButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=REJECT_CUSTOM_ID_TEMPLATE,
+):
+    def __init__(self, app_id: int) -> None:
+        super().__init__(
+            discord.ui.Button(
+                label="Reject",
+                style=discord.ButtonStyle.danger,
+                custom_id=f"gorp:reject_app:{app_id}",
+            )
+        )
+        self.app_id = app_id
+
+    @classmethod
+    async def from_custom_id(
+        cls,
+        interaction: discord.Interaction,
+        item: discord.ui.Button,
+        match: re.Match[str],
+    ) -> "RejectDecisionButton":
+        return cls(int(match["app_id"]))
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        cog = interaction.client.get_cog("InterviewCog")
+        if not isinstance(cog, InterviewCog):
+            await interaction.response.send_message(
+                "The interview system isn't available right now.", ephemeral=True
+            )
+            return
+        await cog.handle_reject_click(interaction, self.app_id)
+
+
+def build_decision_view(app_id: int) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    view.add_item(AcceptDecisionButton(app_id))
+    view.add_item(RejectDecisionButton(app_id))
+    return view
+
+
+class RejectReasonModal(discord.ui.Modal, title="Reject Application"):
+    reason = discord.ui.TextInput(
+        label="Reason (optional, shown to applicant)",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=1000,
+    )
+
+    def __init__(self, app_id: int, source_message: discord.Message | None) -> None:
+        super().__init__()
+        self.app_id = app_id
+        # interaction.message is None on modal-submit interactions, so we stash
+        # the originating staff-channel message here so the cog can edit it
+        # after the reject is recorded.
+        self.source_message = source_message
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        cog = interaction.client.get_cog("InterviewCog")
+        if not isinstance(cog, InterviewCog):
+            await interaction.response.send_message(
+                "The interview system isn't available right now.", ephemeral=True
+            )
+            return
+        await cog.handle_reject_submit(
+            interaction,
+            self.app_id,
+            (self.reason.value or "").strip() or None,
+            source_message=self.source_message,
+        )
 
 
 class InterviewCog(commands.Cog):
@@ -197,11 +323,37 @@ class InterviewCog(commands.Cog):
 
         await self._ask_next(user, session)
 
+    def _embargo_reapply_at(self, user_id: int) -> datetime | None:
+        """Return the earliest UTC datetime at which `user_id` may reapply, or
+        None if they're not currently under a rejection embargo."""
+        rejection = latest_rejection_for_user(self.db_path, user_id)
+        if not rejection:
+            return None
+        decided_at_raw = rejection.get("decided_at")
+        if not decided_at_raw:
+            return None
+        try:
+            decided_at = datetime.fromisoformat(decided_at_raw)
+        except ValueError:
+            return None
+        if decided_at.tzinfo is None:
+            decided_at = decided_at.replace(tzinfo=timezone.utc)
+        reapply_at = decided_at + timedelta(days=REAPPLY_EMBARGO_DAYS)
+        return reapply_at if reapply_at > datetime.now(timezone.utc) else None
+
     async def start_for_user(self, user: discord.abc.User) -> None:
         if user.id in self.sessions:
             await user.send(
                 "You already have an interview in progress. Type `restart` to "
                 "start over, or `cancel` to stop."
+            )
+            return
+        reapply_at = self._embargo_reapply_at(user.id)
+        if reapply_at is not None:
+            await user.send(
+                "Your previous application was not accepted. You may reapply on "
+                f"<t:{int(reapply_at.timestamp())}:D> "
+                f"(<t:{int(reapply_at.timestamp())}:R>)."
             )
             return
         session = InterviewSession(
@@ -219,6 +371,15 @@ class InterviewCog(commands.Cog):
             await interaction.response.send_message(
                 "You already have an interview in progress in your DMs. Type "
                 "`restart` there to start over, or `cancel` to stop.",
+                ephemeral=True,
+            )
+            return
+        reapply_at = self._embargo_reapply_at(user.id)
+        if reapply_at is not None:
+            await interaction.response.send_message(
+                "Your previous application was not accepted. You may reapply on "
+                f"<t:{int(reapply_at.timestamp())}:D> "
+                f"(<t:{int(reapply_at.timestamp())}:R>).",
                 ephemeral=True,
             )
             return
@@ -260,8 +421,9 @@ class InterviewCog(commands.Cog):
         self, user: discord.abc.User, session: InterviewSession
     ) -> None:
         record = session.to_record()
+        app_id: int | None = None
         try:
-            save_application(
+            app_id = save_application(
                 self.db_path,
                 user_id=record["user_id"],
                 username=record["username"],
@@ -273,7 +435,7 @@ class InterviewCog(commands.Cog):
             logger.exception("Failed to persist application for %s", user.id)
 
         try:
-            await self._post_results_embed(record)
+            await self._post_results_embed(record, app_id)
         except Exception:
             logger.exception("Failed to post results embed for %s", user.id)
 
@@ -283,7 +445,9 @@ class InterviewCog(commands.Cog):
             "the GORP staff for review. You'll hear back soon - thank you."
         )
 
-    async def _post_results_embed(self, record: dict) -> None:
+    async def _post_results_embed(
+        self, record: dict, app_id: int | None
+    ) -> None:
         channel = self.bot.get_channel(self.results_channel_id)
         if channel is None:
             channel = await self.bot.fetch_channel(self.results_channel_id)
@@ -292,13 +456,240 @@ class InterviewCog(commands.Cog):
             f"<@&{self.recruiter_role_id}> "
             f"New application from <@{record['user_id']}>"
         )
-        await channel.send(
-            content=content,
-            embed=embed,
-            allowed_mentions=discord.AllowedMentions(
+        kwargs: dict = {
+            "content": content,
+            "embed": embed,
+            "allowed_mentions": discord.AllowedMentions(
                 roles=True, users=False, everyone=False
             ),
+        }
+        if app_id is not None:
+            kwargs["view"] = build_decision_view(app_id)
+        await channel.send(**kwargs)
+
+    # --- Staff accept/reject handlers (invoked by DecisionView buttons) -----
+
+    async def _check_recruiter(
+        self, interaction: discord.Interaction
+    ) -> bool:
+        """Ephemerally reject the interaction and return False if the clicker
+        doesn't hold the recruiter role. Bot-owner/admin members in the guild
+        bypass the check (treated as recruiters)."""
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            await interaction.response.send_message(
+                "Decisions can only be made from inside the server.",
+                ephemeral=True,
+            )
+            return False
+        if member.guild_permissions.manage_guild:
+            return True
+        if any(role.id == self.recruiter_role_id for role in member.roles):
+            return True
+        await interaction.response.send_message(
+            "You need the recruiter role to use these buttons.",
+            ephemeral=True,
         )
+        return False
+
+    def _decision_already_made_message(self, app: dict) -> str:
+        status = app.get("status", "decided")
+        decided_by = app.get("decided_by")
+        decided_at = app.get("decided_at") or ""
+        who = f"<@{decided_by}>" if decided_by else "someone"
+        when = f" on {decided_at[:10]}" if decided_at else ""
+        return f"This application is already **{status}** by {who}{when}."
+
+    async def handle_accept(
+        self, interaction: discord.Interaction, app_id: int
+    ) -> None:
+        if not await self._check_recruiter(interaction):
+            return
+        app = get_application(self.db_path, app_id)
+        if app is None:
+            await interaction.response.send_message(
+                "I couldn't find that application in the database.",
+                ephemeral=True,
+            )
+            return
+        if app.get("status") != "submitted":
+            await interaction.response.send_message(
+                self._decision_already_made_message(app), ephemeral=True
+            )
+            return
+
+        await interaction.response.defer()
+
+        decided_at = datetime.now(timezone.utc)
+        try:
+            set_application_decision(
+                self.db_path,
+                application_id=app_id,
+                status="accepted",
+                decided_by=interaction.user.id,
+                decided_at=decided_at,
+            )
+        except Exception:
+            logger.exception("Failed to record accept for app %s", app_id)
+            await interaction.followup.send(
+                "Database error recording the decision. Try again.",
+                ephemeral=True,
+            )
+            return
+
+        applicant_id = int(app["user_id"])
+        departments = app.get("answers", {}).get("department", []) or []
+        if isinstance(departments, str):
+            departments = [departments]
+        dm_body = build_acceptance_dm(list(departments))
+        dm_status = await self._dm_applicant(applicant_id, dm_body)
+
+        await self._finalize_decision_embed(
+            interaction.message,
+            status="accepted",
+            color=discord.Color.teal(),
+            prefix=f"✅ Accepted by {interaction.user.mention}",
+            dm_status=dm_status,
+        )
+
+    async def handle_reject_click(
+        self, interaction: discord.Interaction, app_id: int
+    ) -> None:
+        if not await self._check_recruiter(interaction):
+            return
+        app = get_application(self.db_path, app_id)
+        if app is None:
+            await interaction.response.send_message(
+                "I couldn't find that application in the database.",
+                ephemeral=True,
+            )
+            return
+        if app.get("status") != "submitted":
+            await interaction.response.send_message(
+                self._decision_already_made_message(app), ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(
+            RejectReasonModal(app_id, interaction.message)
+        )
+
+    async def handle_reject_submit(
+        self,
+        interaction: discord.Interaction,
+        app_id: int,
+        reason: str | None,
+        *,
+        source_message: discord.Message | None,
+    ) -> None:
+        app = get_application(self.db_path, app_id)
+        if app is None:
+            await interaction.response.send_message(
+                "I couldn't find that application in the database.",
+                ephemeral=True,
+            )
+            return
+        if app.get("status") != "submitted":
+            await interaction.response.send_message(
+                self._decision_already_made_message(app), ephemeral=True
+            )
+            return
+
+        await interaction.response.defer()
+
+        decided_at = datetime.now(timezone.utc)
+        try:
+            set_application_decision(
+                self.db_path,
+                application_id=app_id,
+                status="rejected",
+                decided_by=interaction.user.id,
+                decided_at=decided_at,
+                reason=reason,
+            )
+        except Exception:
+            logger.exception("Failed to record reject for app %s", app_id)
+            await interaction.followup.send(
+                "Database error recording the decision. Try again.",
+                ephemeral=True,
+            )
+            return
+
+        applicant_id = int(app["user_id"])
+        reapply_at = decided_at + timedelta(days=REAPPLY_EMBARGO_DAYS)
+        dm_body = build_rejection_dm(reapply_at, reason)
+        dm_status = await self._dm_applicant(applicant_id, dm_body)
+
+        prefix = f"❌ Rejected by {interaction.user.mention}"
+        if reason:
+            short = reason if len(reason) <= 200 else reason[:197] + "…"
+            prefix = f"{prefix}\n**Reason:** {short}"
+        await self._finalize_decision_embed(
+            source_message,
+            status="rejected",
+            color=discord.Color.red(),
+            prefix=prefix,
+            dm_status=dm_status,
+        )
+
+    async def _dm_applicant(self, user_id: int, body: str) -> str:
+        """DM the applicant the decision message. Returns a short status string
+        suitable for appending to the staff embed footer."""
+        try:
+            user = self.bot.get_user(user_id) or await self.bot.fetch_user(
+                user_id
+            )
+        except discord.HTTPException:
+            return "DM failed (could not fetch user)"
+        try:
+            await user.send(body)
+        except discord.Forbidden:
+            return "DM failed (user has DMs closed)"
+        except discord.HTTPException:
+            logger.exception("Failed to DM applicant %s", user_id)
+            return "DM failed"
+        return "DM sent"
+
+    async def _finalize_decision_embed(
+        self,
+        message: discord.Message | None,
+        *,
+        status: str,
+        color: discord.Color,
+        prefix: str,
+        dm_status: str,
+    ) -> None:
+        """Edit the original staff message: recolor the embed, prepend the
+        decision banner to the description, append DM status to the footer, and
+        strip the buttons so the decision can't be reclicked."""
+        try:
+            if message is None:
+                return
+            embed = message.embeds[0] if message.embeds else discord.Embed()
+            new = discord.Embed(
+                title=embed.title,
+                description=(
+                    f"{prefix}\n\n{embed.description}"
+                    if embed.description
+                    else prefix
+                ),
+                color=color,
+                timestamp=embed.timestamp,
+            )
+            if embed.author and embed.author.name:
+                new.set_author(name=embed.author.name)
+            for field in embed.fields:
+                new.add_field(
+                    name=field.name, value=field.value, inline=field.inline
+                )
+            footer_text = embed.footer.text if embed.footer else ""
+            new.set_footer(
+                text=f"{footer_text} • {status.title()} • {dm_status}".strip(
+                    " •"
+                )
+            )
+            await message.edit(embed=new, view=None)
+        except Exception:
+            logger.exception("Failed to update decision embed")
 
     def _build_embed(self, record: dict) -> discord.Embed:
         answers = record["answers"]
