@@ -18,6 +18,7 @@ from db import (
     latest_rejection_for_user,
     save_application,
     set_application_decision,
+    record_activity,
 )
 from questions import QUESTIONS, Question
 from session import InterviewSession, choice_prompt
@@ -212,11 +213,15 @@ class InterviewCog(commands.Cog):
         results_channel_id: int,
         recruiter_role_id: int,
         db_path: Path,
+        main_server_invite_channel_id: int | None = None,
+        opp_server_invite_channel_id: int | None = None,
     ) -> None:
         self.bot = bot
         self.results_channel_id = results_channel_id
         self.recruiter_role_id = recruiter_role_id
         self.db_path = db_path
+        self.main_server_invite_channel_id = main_server_invite_channel_id
+        self.opp_server_invite_channel_id = opp_server_invite_channel_id
         self.sessions: dict[int, InterviewSession] = {}
         self.expire_idle_sessions.start()
 
@@ -273,6 +278,7 @@ class InterviewCog(commands.Cog):
         await self._handle_dm(message.author, text)
 
     async def _handle_dm(self, user: discord.abc.User, text: str) -> None:
+        record_activity(self.db_path, user.id, datetime.now(timezone.utc))
         session = self.sessions.get(user.id)
         lowered = text.lower()
 
@@ -541,8 +547,27 @@ class InterviewCog(commands.Cog):
         departments = app.get("answers", {}).get("department", []) or []
         if isinstance(departments, str):
             departments = [departments]
-        dm_body = build_acceptance_dm(list(departments))
+        main_invite_url = await self._create_invite(
+            self.main_server_invite_channel_id, "main server"
+        )
+        opp_invite_url = None
+        if "OPP" in departments:
+            opp_invite_url = await self._create_invite(
+                self.opp_server_invite_channel_id, "OPP server"
+            )
+        dm_body = build_acceptance_dm(
+            list(departments),
+            main_invite_url=main_invite_url,
+            opp_invite_url=opp_invite_url,
+        )
         dm_status = await self._dm_applicant(applicant_id, dm_body)
+        invite_bits: list[str] = []
+        if self.main_server_invite_channel_id:
+            invite_bits.append("main✓" if main_invite_url else "main✗")
+        if "OPP" in departments and self.opp_server_invite_channel_id:
+            invite_bits.append("OPP✓" if opp_invite_url else "OPP✗")
+        if invite_bits:
+            dm_status = f"{dm_status} · invites: {', '.join(invite_bits)}"
 
         await self._finalize_decision_embed(
             interaction.message,
@@ -630,6 +655,54 @@ class InterviewCog(commands.Cog):
             prefix=prefix,
             dm_status=dm_status,
         )
+
+    async def _create_invite(
+        self, channel_id: int | None, label: str
+    ) -> str | None:
+        """Create a single-use, non-expiring invite to `channel_id` (a channel in
+        one of the community servers the bot has been added to) and return its
+        URL. Degrades to None - logging a warning - when the channel isn't
+        configured, can't be reached, isn't a text channel, or the bot lacks the
+        Create Invite permission."""
+        if not channel_id:
+            return None
+        try:
+            channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(
+                channel_id
+            )
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+            logger.warning(
+                "Could not load %s invite channel %s (%s); skipping invite.",
+                label,
+                channel_id,
+                exc,
+            )
+            return None
+        if not isinstance(channel, discord.TextChannel):
+            logger.warning(
+                "%s invite channel %s is not a text channel; skipping invite.",
+                label,
+                channel_id,
+            )
+            return None
+        try:
+            invite = await channel.create_invite(
+                max_age=0,
+                max_uses=1,
+                unique=True,
+                reason="Accepted GORP applicant",
+            )
+        except discord.Forbidden:
+            logger.warning(
+                "No permission to create an invite in the %s channel #%s.",
+                label,
+                channel.name,
+            )
+            return None
+        except discord.HTTPException:
+            logger.exception("Failed to create %s invite", label)
+            return None
+        return invite.url
 
     async def _dm_applicant(self, user_id: int, body: str) -> str:
         """DM the applicant the decision message. Returns a short status string

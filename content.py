@@ -101,7 +101,7 @@ FAQ_ENTRIES: tuple[tuple[str, str], ...] = (
         "Do I need to have a PC?",
         "Yes, GORP is a FiveM based server which is strictly for PC players. "
         "However, our communications department doesn't have to be in game! As "
-        "long as they have TeamSpeak and access to our CAD system, they're good "
+        "long as they have Sonoran Radio and access to our CAD system, they're good "
         "to go.",
     ),
     (
@@ -190,7 +190,7 @@ ACCEPTANCE_DM_INTRO = (
     "for upcoming sessions.\n"
     "- You're expected to be active for at least **2 full patrols a week** "
     "(4 hours minimum).\n"
-    "- Patrols are coordinated in Discord and on our TeamSpeak.\n\n"
+    "- Patrols are coordinated in Discord and over Sonoran Radio.\n\n"
     "**Important channels to check**\n"
     "- Announcements & rule updates\n"
     "- Patrol schedule\n"
@@ -206,27 +206,39 @@ ACCEPTANCE_DM_INTRO = (
 DEPARTMENT_ORIENTATION: dict[str, str] = {
     "OPP": (
         "**Next steps - OPP**\n"
-        "- TODO: name the OPP point-of-contact role.\n"
-        "- TODO: link the OPP recruit-training channel and ride-along signup.\n"
-        "- TODO: list sub-divisions a new member can pick from."
+        "- Your points of contact are **Sgt M. Allain** and **Sgt L. Rozsas** "
+        "- reach out to them with any questions.\n"
+        "- Recruit training & ride-along signup: "
+        "https://discord.com/channels/951942783147606116/1070818727681081414\n"
+        "- Opportunities within the OPP can be found here upon promotion to "
+        "**Constable III**: "
+        "https://discord.com/channels/951942783147606116/951942783722213390"
     ),
     "Fire/EMS": (
         "**Next steps - Fire/EMS**\n"
-        "- TODO: name the Fire/EMS point-of-contact role.\n"
-        "- TODO: link the Fire/EMS onboarding channel.\n"
-        "- TODO: note when probationary shifts are scheduled."
+        "- Your point of contact is **J. Flood** - reach out with any "
+        "questions.\n"
+        "- Onboarding: "
+        "https://discord.com/channels/592770866044207104/1083598448600809535 "
+        "and "
+        "https://discord.com/channels/592770866044207104/1197057854646005811"
     ),
     "Civilian Ops": (
         "**Next steps - Civilian Ops**\n"
-        "- TODO: name the Civ Ops point-of-contact role.\n"
-        "- TODO: link the civ-ops channel and any character-approval thread.\n"
-        "- TODO: note any starter-character guidance."
+        "- Your point of contact is **T. Smith** - reach out with any "
+        "questions.\n"
+        "- Civ Ops channel: "
+        "https://discord.com/channels/592770866044207104/974154883164934204\n"
+        "- Character approval: "
+        "https://discord.com/channels/592770866044207104/974155126644301824"
     ),
     "Communications": (
         "**Next steps - Communications**\n"
-        "- TODO: name the Comms point-of-contact role.\n"
-        "- TODO: link the dispatch/comms channel and CAD training docs.\n"
-        "- TODO: note the TeamSpeak rooms used during patrols."
+        "- Your point of contact is <@1449855114394210484> - reach out with "
+        "any questions.\n"
+        "- A dedicated comms channel is coming soon.\n"
+        "- We use **Sonoran Radio** (not TeamSpeak) for comms - setup details "
+        "will be shared with you shortly."
     ),
 }
 
@@ -240,13 +252,20 @@ REJECTION_DM_BODY = (
 )
 
 
-def build_acceptance_dm(departments: list[str]) -> str:
-    """Build the acceptance DM body: fixed orientation intro plus a block for
-    each department the candidate selected. Unknown department strings are
-    skipped with a log warning (e.g. if the questions list changes but the
-    orientation copy doesn't)."""
+def build_acceptance_dm(
+    departments: list[str],
+    *,
+    main_invite_url: str | None = None,
+    opp_invite_url: str | None = None,
+) -> str:
+    """Build the acceptance DM body: fixed orientation intro, a block for each
+    department the candidate selected, then a "join us" section listing whatever
+    server invite links were created. Unknown department strings are skipped
+    with a log warning (e.g. if the questions list changes but the orientation
+    copy doesn't)."""
     parts: list[str] = [ACCEPTANCE_DM_INTRO]
     seen: set[str] = set()
+    department_blocks = 0
     for dept in departments or []:
         if dept in seen:
             continue
@@ -258,10 +277,23 @@ def build_acceptance_dm(departments: list[str]) -> str:
             )
             continue
         parts.append(block)
-    if len(parts) == 1:
+        department_blocks += 1
+    if department_blocks == 0:
         parts.append(
             "*(No department-specific next steps available - a recruiter will "
             "reach out directly.)*"
+        )
+
+    invite_lines: list[str] = []
+    if main_invite_url:
+        invite_lines.append(f"- Main community server: {main_invite_url}")
+    if opp_invite_url:
+        invite_lines.append(f"- OPP division server: {opp_invite_url}")
+    if invite_lines:
+        parts.append(
+            "**Join us in-server**\n"
+            "Use the link(s) below to hop into the right Discord server(s):\n"
+            + "\n".join(invite_lines)
         )
     return "\n\n".join(parts)
 
@@ -275,6 +307,43 @@ def build_rejection_dm(reapply_at: datetime, reason: str | None) -> str:
     if reason:
         body = f"{body}\n\n**Note from staff:** {reason}"
     return body
+
+
+def build_prospect_ping(role_id: int) -> str:
+    """The recurring nudge posted to prospects. Mentions the prospect role, so
+    the caller must pass allowed_mentions that permit role pings."""
+    return (
+        f"<@&{role_id}> 👋 Still thinking it over? Your GORP application is only "
+        "a few minutes away.\n"
+        "DM me `apply` (or use the **Start Interview** button in the apply "
+        "channel) to begin or finish your interview - we'd love to have you on "
+        "patrol!"
+    )
+
+
+def build_prospect_warning_dm(kick_days: int) -> str:
+    """Warning DM sent to an inactive prospect a couple days before removal."""
+    return (
+        "**Quick heads-up from Greater Ontario Roleplay**\n"
+        "We noticed you joined but haven't been active yet. To keep our "
+        f"recruitment server tidy, prospective members inactive for {kick_days} "
+        "days are automatically removed.\n\n"
+        "You'll be removed in about **2 days** unless you become active - just "
+        "send a message in the server or DM me `apply` to start your interview. "
+        "Hope to see you around!"
+    )
+
+
+def build_prospect_kick_dm(kick_days: int) -> str:
+    """Notice DM sent right before an inactive prospect is removed."""
+    return (
+        "**Greater Ontario Roleplay**\n"
+        f"You've been removed from our recruitment server after {kick_days} "
+        "days without activity - no hard feelings, this just keeps things "
+        "tidy.\n\n"
+        "You're welcome to rejoin anytime and start your application whenever "
+        "you're ready. Hope to see you again!"
+    )
 
 
 def build_requirements_embed() -> discord.Embed:

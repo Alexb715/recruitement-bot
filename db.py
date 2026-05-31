@@ -29,6 +29,12 @@ CREATE TABLE IF NOT EXISTS bot_state (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS member_activity (
+    user_id       TEXT PRIMARY KEY,
+    last_activity TEXT NOT NULL,
+    warned_at     TEXT
+);
 """
 
 # Columns added after the initial schema. Applied via ALTER TABLE on startup so
@@ -184,3 +190,76 @@ def set_state(db_path: Path, key: str, value: str) -> None:
 def delete_state(db_path: Path, key: str) -> None:
     with _connect(db_path) as conn:
         conn.execute("DELETE FROM bot_state WHERE key = ?", (key,))
+
+
+def record_activity(db_path: Path, user_id: int, when: datetime) -> None:
+    """Mark a member as active at `when`, clearing any pending inactivity
+    warning - becoming active restarts the 14-day clock from scratch."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO member_activity (user_id, last_activity, warned_at)
+            VALUES (?, ?, NULL)
+            ON CONFLICT(user_id) DO UPDATE SET
+                last_activity = excluded.last_activity,
+                warned_at = NULL
+            """,
+            (str(user_id), when.isoformat()),
+        )
+
+
+def get_member_activity(db_path: Path, user_id: int) -> dict[str, Any] | None:
+    """Return {'last_activity': datetime, 'warned_at': datetime | None} for a
+    member, or None if we've never recorded any activity for them."""
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT last_activity, warned_at FROM member_activity WHERE user_id = ?",
+            (str(user_id),),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "last_activity": datetime.fromisoformat(row["last_activity"]),
+        "warned_at": (
+            datetime.fromisoformat(row["warned_at"]) if row["warned_at"] else None
+        ),
+    }
+
+
+def seed_activity_if_absent(db_path: Path, user_id: int, when: datetime) -> None:
+    """Seed a member's last_activity only if no row exists yet. Used to backfill
+    current prospects on startup so they get a fresh window instead of being
+    judged inactive immediately."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO member_activity (user_id, last_activity, warned_at)
+            VALUES (?, ?, NULL)
+            """,
+            (str(user_id), when.isoformat()),
+        )
+
+
+def mark_warned(
+    db_path: Path, user_id: int, last_activity: datetime, warned_at: datetime
+) -> None:
+    """Record that an inactivity warning was sent. If no row exists yet (member
+    never tracked, inactivity measured from join date), seed last_activity with
+    the provided value so the kick clock is preserved; otherwise only update
+    warned_at and leave last_activity untouched."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO member_activity (user_id, last_activity, warned_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET warned_at = excluded.warned_at
+            """,
+            (str(user_id), last_activity.isoformat(), warned_at.isoformat()),
+        )
+
+
+def delete_member_activity(db_path: Path, user_id: int) -> None:
+    with _connect(db_path) as conn:
+        conn.execute(
+            "DELETE FROM member_activity WHERE user_id = ?", (str(user_id),)
+        )

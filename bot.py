@@ -14,6 +14,7 @@ from cogs.interview import (
     RejectDecisionButton,
     build_apply_embed,
 )
+from cogs.prospects import ProspectsCog
 from config import load_config
 from content import build_faq_embed, build_requirements_embed
 from db import delete_state, get_state, init_db, set_state
@@ -49,6 +50,20 @@ class RecruiterBot(commands.Bot):
                 results_channel_id=self.config.results_channel_id,
                 recruiter_role_id=self.config.recruiter_role_id,
                 db_path=self.config.db_path,
+                main_server_invite_channel_id=self.config.main_server_invite_channel_id,
+                opp_server_invite_channel_id=self.config.opp_server_invite_channel_id,
+            )
+        )
+        await self.add_cog(
+            ProspectsCog(
+                self,
+                db_path=self.config.db_path,
+                enabled=self.config.prospect_management_enabled,
+                prospect_role_id=self.config.prospect_role_id,
+                ping_channel_id=self.config.prospect_ping_channel_id,
+                ping_interval_hours=self.config.prospect_ping_interval_hours,
+                warn_days=self.config.inactivity_warn_days,
+                kick_days=self.config.inactivity_kick_days,
             )
         )
         await self.add_cog(AdminCog(self))
