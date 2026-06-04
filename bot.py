@@ -7,6 +7,7 @@ import discord
 from discord.ext import commands
 
 from cogs.admin import AdminCog
+from cogs.inquiry import CloseTicketView, InquiryCog
 from cogs.interview import (
     AcceptDecisionButton,
     ApplyView,
@@ -34,15 +35,38 @@ def _make_intents() -> discord.Intents:
     return intents
 
 
+_ACTIVITY_TYPES = {
+    "playing": discord.ActivityType.playing,
+    "watching": discord.ActivityType.watching,
+    "listening": discord.ActivityType.listening,
+    "competing": discord.ActivityType.competing,
+}
+
+
+def _activity_from_config(config) -> discord.Activity:
+    """Build the bot's presence activity from config, defaulting to a 'watching'
+    activity if the configured type isn't recognized."""
+    activity_type = _ACTIVITY_TYPES.get(
+        config.bot_activity_type, discord.ActivityType.watching
+    )
+    return discord.Activity(type=activity_type, name=config.bot_activity_text)
+
+
 class RecruiterBot(commands.Bot):
     def __init__(self, *, config) -> None:
-        super().__init__(command_prefix="!", intents=_make_intents())
+        super().__init__(
+            command_prefix="!",
+            intents=_make_intents(),
+            activity=_activity_from_config(config),
+            status=discord.Status.online,
+        )
         self.config = config
         self._auto_post_done = False
 
     async def setup_hook(self) -> None:
         init_db(self.config.db_path)
         self.add_view(ApplyView())
+        self.add_view(CloseTicketView())
         self.add_dynamic_items(AcceptDecisionButton, RejectDecisionButton)
         await self.add_cog(
             InterviewCog(
@@ -61,9 +85,17 @@ class RecruiterBot(commands.Bot):
                 enabled=self.config.prospect_management_enabled,
                 prospect_role_id=self.config.prospect_role_id,
                 ping_channel_id=self.config.prospect_ping_channel_id,
-                ping_interval_hours=self.config.prospect_ping_interval_hours,
+                ping_times=self.config.prospect_ping_times,
                 warn_days=self.config.inactivity_warn_days,
                 kick_days=self.config.inactivity_kick_days,
+            )
+        )
+        await self.add_cog(
+            InquiryCog(
+                self,
+                open_category_id=self.config.ticket_category_id,
+                closed_category_id=self.config.ticket_closed_category_id,
+                support_role_id=self.config.faq_support_role_id,
             )
         )
         await self.add_cog(AdminCog(self))

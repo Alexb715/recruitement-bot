@@ -37,6 +37,18 @@ The bot also maintains two static, informational messages the same way it mainta
 
 The FAQ text can reference other channels and a support role as **clickable mentions**. Set `FAQ_INTERVIEW_REQUEST_CHANNEL_ID`, `FAQ_RULES_CHANNEL_ID`, `FAQ_OPP_RECRUITMENT_CHANNEL_ID`, and `FAQ_SUPPORT_ROLE_ID` in `.env` to wire them. Any left blank fall back to plain-text wording, so the FAQ always reads correctly. Because these mentions live inside the embed, they render as clickable links but never ping anyone. All FAQ and Requirements wording lives in `content.py`.
 
+### Help / Inquiry ticket button
+
+Alongside **Start Interview**, the apply message carries a secondary **Help / Inquiry** button for general questions. Clicking it opens a short pop-up form; on submit the bot opens a **private support ticket** - a dedicated channel under the category set by `TICKET_CATEGORY_ID`, visible only to the member who opened it and the `FAQ_SUPPORT_ROLE_ID` team (who are pinged). The member's question seeds the ticket's first message, and the ticket carries a **Close** button.
+
+Closing a ticket (by staff or the opener) moves the channel to `TICKET_CLOSED_CATEGORY_ID` and revokes the opener's access, leaving a staff-only record. A member can only have one open ticket at a time; clicking Help again points them to their existing one.
+
+This needs the bot to have the **Manage Channels** and **Manage Roles** permissions (to create channels with per-member visibility and to move/relabel them on close). Leave `TICKET_CATEGORY_ID` blank to disable the button (it then replies that inquiries aren't set up). The logic lives in `cogs/inquiry.py`.
+
+### Bot presence
+
+The bot sets a presence shown under its name, configurable via `BOT_ACTIVITY_TYPE` (playing / watching / listening / competing) and `BOT_ACTIVITY_TEXT`. The default reads **"Watching for new applicants"**.
+
 ### DM interview flow
 
 Once started, the bot asks the applicant **20 questions, one at a time**, in DMs. The order matches the original Google Form (the Discord User ID / Discord info questions are skipped because the bot autofills them), with Rod's two additions (`What are your greatest strengths?` / `What are your greatest weaknesses?` in FiveM RP) inserted immediately after the **"Define respect"** question.
@@ -180,8 +192,14 @@ All configuration lives in `.env` at the project root.
 | `FAQ_INTERVIEW_REQUEST_CHANNEL_ID` | no | Channel rendered as a clickable mention in the FAQ's "How do I apply?" answer. Blank falls back to plain text. | `1234567890` |
 | `FAQ_RULES_CHANNEL_ID` | no | Channel rendered as a clickable mention in the FAQ's dual-clan-policy answer. Blank falls back to plain text. | `1234567890` |
 | `FAQ_OPP_RECRUITMENT_CHANNEL_ID` | no | Channel rendered as a clickable mention in the FAQ's subdivision answer. Blank falls back to plain text. | `1234567890` |
-| `FAQ_SUPPORT_ROLE_ID` | no | Role rendered as a clickable mention in the FAQ's "What if I need assistance?" answer. Blank falls back to plain text. | `1234567890` |
+| `FAQ_SUPPORT_ROLE_ID` | no | Role rendered as a clickable mention in the FAQ's "What if I need assistance?" answer. Also the team pinged in and given access to Help tickets. Blank falls back to plain text / no ticket ping. | `1234567890` |
+| `TICKET_CATEGORY_ID` | no | If set, enables the **Help / Inquiry** button: tickets are created as private channels under this category. Requires the bot to have Manage Channels + Manage Roles. Blank disables the button. | `1234567890` |
+| `TICKET_CLOSED_CATEGORY_ID` | no | Category a ticket is moved to when closed (opener access is revoked). Blank leaves closed tickets in place, renamed `closed-…`. | `1234567890` |
 | `DEV_GUILD_ID` | no | If set, slash commands sync only to this guild (instant). Leave blank for global sync. | `1234567890` |
+| `PROSPECT_PING_TIMES` | no | Comma-separated `HH:MM` clock times the recurring prospect nudge fires each day (only when prospect management is enabled). Default `09:00,21:00`. | `09:00,21:00` |
+| `PROSPECT_PING_TIMEZONE` | no | IANA timezone for `PROSPECT_PING_TIMES`, DST-aware. Default `America/Toronto` (Eastern). | `America/Toronto` |
+| `BOT_ACTIVITY_TYPE` | no | Presence verb: playing / watching / listening / competing. Default `watching`. | `watching` |
+| `BOT_ACTIVITY_TEXT` | no | Presence text shown after the verb. Default `for new applicants`. | `for new applicants` |
 | `DB_PATH` | no | Relative or absolute path for the SQLite database. | `data/applications.db` (default) |
 
 To find a channel/role ID: enable **Developer Mode** in Discord (Settings → Advanced), then right-click the channel/role → **Copy ID**.

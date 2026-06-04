@@ -8,6 +8,7 @@ from pathlib import Path
 import discord
 from discord.ext import commands, tasks
 
+from cogs.inquiry import InquiryCog
 from content import (
     REAPPLY_EMBARGO_DAYS,
     build_acceptance_dm,
@@ -73,6 +74,25 @@ class ApplyView(discord.ui.View):
             )
             return
         await cog.start_from_interaction(interaction)
+
+    @discord.ui.button(
+        label="Help / Inquiry",
+        style=discord.ButtonStyle.secondary,
+        custom_id="gorp:open_inquiry",
+    )
+    async def help_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        cog = interaction.client.get_cog("InquiryCog")
+        if not isinstance(cog, InquiryCog):
+            await interaction.response.send_message(
+                "Inquiries aren't available right now. Please contact staff directly.",
+                ephemeral=True,
+            )
+            return
+        await cog.open_inquiry(interaction)
 
 
 def build_apply_embed() -> discord.Embed:

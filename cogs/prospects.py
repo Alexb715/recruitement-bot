@@ -12,7 +12,7 @@ server (tracked here) or interact with the interview in DMs (tracked in
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
 import discord
@@ -37,6 +37,11 @@ logger = logging.getLogger(__name__)
 # promptly, infrequent enough to stay cheap.
 INACTIVITY_SCAN_HOURS = 3
 
+# Placeholder schedule for the prospect-ping loop declaration. The real,
+# tz-aware times come from config and are applied via `change_interval` before
+# the loop is started, so this default is never actually used.
+_DEFAULT_PING_TIMES = [time(9), time(21)]
+
 
 class ProspectsCog(commands.Cog):
     def __init__(
@@ -47,7 +52,7 @@ class ProspectsCog(commands.Cog):
         enabled: bool,
         prospect_role_id: int | None,
         ping_channel_id: int | None,
-        ping_interval_hours: int,
+        ping_times: tuple[time, ...],
         warn_days: int,
         kick_days: int,
     ) -> None:
@@ -56,7 +61,7 @@ class ProspectsCog(commands.Cog):
         self.enabled = enabled
         self.prospect_role_id = prospect_role_id
         self.ping_channel_id = ping_channel_id
-        self.ping_interval_hours = max(1, ping_interval_hours)
+        self.ping_times = ping_times
         self.warn_days = warn_days
         self.kick_days = kick_days
         self._backfilled = False
@@ -74,7 +79,7 @@ class ProspectsCog(commands.Cog):
             return
 
         if self.ping_channel_id:
-            self.prospect_ping.change_interval(hours=self.ping_interval_hours)
+            self.prospect_ping.change_interval(time=list(self.ping_times))
             self.prospect_ping.start()
         else:
             logger.info(
@@ -135,7 +140,7 @@ class ProspectsCog(commands.Cog):
 
     # --- recurring ping ---------------------------------------------------
 
-    @tasks.loop(hours=12)
+    @tasks.loop(time=_DEFAULT_PING_TIMES)
     async def prospect_ping(self) -> None:
         if self.prospect_role_id is None or self.ping_channel_id is None:
             return
