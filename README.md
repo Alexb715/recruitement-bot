@@ -39,11 +39,13 @@ The FAQ text can reference other channels and a support role as **clickable ment
 
 ### Help / Inquiry ticket button
 
-Alongside **Start Interview**, the apply message carries a secondary **Help / Inquiry** button for general questions. Clicking it opens a short pop-up form; on submit the bot opens a **private support ticket** - a dedicated channel under the category set by `TICKET_CATEGORY_ID`, visible only to the member who opened it and the `FAQ_SUPPORT_ROLE_ID` team (who are pinged). The member's question seeds the ticket's first message, and the ticket carries a **Close** button.
+Alongside **Start Interview**, the apply message carries a secondary **Help / Inquiry** button for general questions. Clicking it opens a short pop-up form; on submit the bot opens a **private support ticket** - a dedicated channel under the category set by `TICKET_CATEGORY_ID`, visible only to the member who opened it and the `FAQ_SUPPORT_ROLE_ID` team (who are pinged). The member's question seeds the ticket's first message, and the ticket carries **Close** and **Delete** buttons.
 
 Closing a ticket (by staff or the opener) moves the channel to `TICKET_CLOSED_CATEGORY_ID` and revokes the opener's access, leaving a staff-only record. A member can only have one open ticket at a time; clicking Help again points them to their existing one.
 
-This needs the bot to have the **Manage Channels** and **Manage Roles** permissions (to create channels with per-member visibility and to move/relabel them on close). Leave `TICKET_CATEGORY_ID` blank to disable the button (it then replies that inquiries aren't set up). The logic lives in `cogs/inquiry.py`.
+**Deleting** a ticket removes the channel and its history outright. It is staff-only - the `FAQ_SUPPORT_ROLE_ID` team, or anyone with Manage Channels / Manage Server - and asks for confirmation first, so the opener can close their own ticket but only staff can destroy it. The same action is the `/delete-ticket` slash command, run inside the ticket; use it on tickets opened **before** the Delete button shipped, since the button only lands on newly created tickets (old ones still show just Close). The command only acts inside an actual ticket channel.
+
+This needs the bot to have the **Manage Channels** and **Manage Roles** permissions (to create channels with per-member visibility and to move/relabel/delete them). Leave `TICKET_CATEGORY_ID` blank to disable the button (it then replies that inquiries aren't set up). The logic lives in `cogs/inquiry.py`.
 
 ### Bot presence
 

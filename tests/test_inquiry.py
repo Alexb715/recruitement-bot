@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from cogs.inquiry import (
     build_inquiry_embed,
+    is_ticket_channel_meta,
     owner_id_from_topic,
     ticket_channel_name,
 )
@@ -61,3 +62,20 @@ def test_owner_id_from_topic_none_when_absent():
     assert owner_id_from_topic("some unrelated topic") is None
     assert owner_id_from_topic(None) is None
     assert owner_id_from_topic("") is None
+
+
+def test_is_ticket_channel_meta_true_for_owner_topic():
+    # Identified by the owner stamp even with no category configured (e.g. an
+    # orphaned ticket after the categories were unset).
+    assert is_ticket_channel_meta("GORP help ticket | owner:42", None, set()) is True
+
+
+def test_is_ticket_channel_meta_true_for_ticket_category():
+    # No owner stamp, but the channel sits in a configured ticket category.
+    assert is_ticket_channel_meta(None, 999, {999, 1000}) is True
+
+
+def test_is_ticket_channel_meta_false_for_plain_channel():
+    assert is_ticket_channel_meta("just a normal channel", 555, {999, 1000}) is False
+    assert is_ticket_channel_meta(None, None, {999}) is False
+    assert is_ticket_channel_meta(None, 555, set()) is False

@@ -7,7 +7,7 @@ import discord
 from discord.ext import commands
 
 from cogs.admin import AdminCog
-from cogs.inquiry import CloseTicketView, InquiryCog
+from cogs.inquiry import InquiryCog, TicketControlsView
 from cogs.interview import (
     AcceptDecisionButton,
     ApplyView,
@@ -66,7 +66,7 @@ class RecruiterBot(commands.Bot):
     async def setup_hook(self) -> None:
         init_db(self.config.db_path)
         self.add_view(ApplyView())
-        self.add_view(CloseTicketView())
+        self.add_view(TicketControlsView())
         self.add_dynamic_items(AcceptDecisionButton, RejectDecisionButton)
         await self.add_cog(
             InterviewCog(
