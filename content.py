@@ -257,12 +257,15 @@ def build_acceptance_dm(
     *,
     main_invite_url: str | None = None,
     opp_invite_url: str | None = None,
+    invite_expiry_days: int | None = None,
 ) -> str:
     """Build the acceptance DM body: fixed orientation intro, a block for each
     department the candidate selected, then a "join us" section listing whatever
-    server invite links were created. Unknown department strings are skipped
-    with a log warning (e.g. if the questions list changes but the orientation
-    copy doesn't)."""
+    server invite links were created. When `invite_expiry_days` is given, the
+    invite section warns that the links expire after that many days (they're
+    created with a matching max_age). Unknown department strings are skipped with
+    a log warning (e.g. if the questions list changes but the orientation copy
+    doesn't)."""
     parts: list[str] = [ACCEPTANCE_DM_INTRO]
     seen: set[str] = set()
     department_blocks = 0
@@ -290,10 +293,18 @@ def build_acceptance_dm(
     if opp_invite_url:
         invite_lines.append(f"- OPP division server: {opp_invite_url}")
     if invite_lines:
+        expiry_note = ""
+        if invite_expiry_days:
+            unit = "day" if invite_expiry_days == 1 else "days"
+            expiry_note = (
+                f"\n\n**Heads up:** these link(s) expire in "
+                f"{invite_expiry_days} {unit}, so be sure to hop in before then."
+            )
         parts.append(
             "**Join us in-server**\n"
             "Use the link(s) below to hop into the right Discord server(s):\n"
             + "\n".join(invite_lines)
+            + expiry_note
         )
     return "\n\n".join(parts)
 

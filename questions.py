@@ -36,6 +36,12 @@ PATROL_TIMES_EXPLAINER = (
     "notice for 2 weeks can result in removal."
 )
 
+REBUILD_DISCLAIMER = (
+    "**Please note** - Greater Ontario Gaming is currently being rebuilt from the "
+    "ground up. Patrols may not be as frequent as they will become as we grow our "
+    "member count back up. We want you to know what to expect going in."
+)
+
 AGREEMENT_STATEMENT_1 = (
     "I understand the Rules and Regulations put forth by Greater Ontario Gaming, "
     "and agree to follow and abide by these rules to the best of my ability."
@@ -51,6 +57,15 @@ QUESTIONS: tuple[Question, ...] = (
         key="rules_agreement",
         label="Read and agree to GOG rules and expectations",
         prompt="Have you read and agree to the GOG rules and expectations? (yes/no)",
+        kind="yes_no",
+    ),
+    Question(
+        key="rebuild_acknowledgment",
+        label="Acknowledges community rebuild / patrol frequency",
+        prompt=(
+            f"{REBUILD_DISCLAIMER}\n\n"
+            "Do you understand and acknowledge this? (yes/no)"
+        ),
         kind="yes_no",
     ),
     Question(

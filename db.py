@@ -170,6 +170,58 @@ def latest_rejection_for_user(
     return dict(row) if row is not None else None
 
 
+def latest_accepted_community_name(
+    db_path: Path, user_id: int
+) -> str | None:
+    """Return the `community_name` answer from this user's most recent ACCEPTED
+    application, or None if they have no accepted application (or it lacks a
+    usable community_name). Used to nickname accepted applicants when they join
+    a community server."""
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT answers_json
+            FROM applications
+            WHERE user_id = ? AND status = 'accepted' AND decided_at IS NOT NULL
+            ORDER BY decided_at DESC
+            LIMIT 1
+            """,
+            (str(user_id),),
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        answers = json.loads(row["answers_json"])
+    except (ValueError, TypeError):
+        return None
+    value = answers.get("community_name")
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def accepted_users_decided_before(
+    db_path: Path, cutoff: datetime
+) -> list[str]:
+    """Return the user_ids whose most recent acceptance was decided at or before
+    `cutoff` - i.e. accepted members due to be graduated off the recruitment
+    server. A later acceptance for the same user resets the clock (MAX pushes the
+    grouped value past the cutoff), so re-accepted members are excluded."""
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT user_id, MAX(decided_at) AS last_decided
+            FROM applications
+            WHERE status = 'accepted' AND decided_at IS NOT NULL
+            GROUP BY user_id
+            HAVING last_decided <= ?
+            """,
+            (cutoff.isoformat(),),
+        ).fetchall()
+    return [row["user_id"] for row in rows]
+
+
 def get_state(db_path: Path, key: str) -> str | None:
     with _connect(db_path) as conn:
         row = conn.execute(

@@ -86,6 +86,14 @@ When the applicant submits their final answer the bot:
 3. Pings the role configured by `RECRUITER_ROLE_ID` so staff are notified.
 4. DMs the applicant a confirmation that their interview is complete.
 
+### On acceptance
+
+When a recruiter clicks **Accept** on an application embed, the bot:
+
+1. Sets the applicant's **nickname** to their "first initial + last name" answer, both in the recruitment server (immediately) and in the main / OPP servers when they join via their invite. Needs **Manage Nicknames** in those servers; it skips the server owner and logs (never crashes) if it lacks the permission or is below the member in the role hierarchy.
+2. Creates single-use invites to the main server (and the OPP server for OPP applicants) and DMs them, along with department orientation. The invites **expire after `RECRUITMENT_GRADUATION_DAYS`** (default 5), so an unused invite becomes void once the join window closes.
+3. **Graduates** the applicant off the recruitment server — kicking them once they join a community server, or after `RECRUITMENT_GRADUATION_DAYS`, whichever comes first — so the recruitment server stays a funnel. This is gated by `RECRUITMENT_GRADUATION_ENABLED` (default on), never touches staff/bots, and is independent of the separate prospect inactivity kick.
+
 ---
 
 ## Setup
@@ -104,7 +112,10 @@ When the applicant submits their final answer the bot:
    - Embed Links
    - Read Message History
    - Mention `@everyone`, `@here`, and All Roles (needed to ping the recruiter role)
-5. Use the generated URL to invite the bot to your server.
+   - Create Instant Invite (to issue acceptance invites to the community servers)
+   - Manage Nicknames (in the **main / OPP** servers — to rename accepted applicants to their community name)
+   - Kick Members (in the **recruitment** server — for recruitment-server graduation)
+5. Use the generated URL to invite the bot to your server. If you run separate community (main / OPP) servers, invite the bot there too, with **Manage Nicknames**.
 
 ### 2. Install and configure
 
@@ -200,6 +211,8 @@ All configuration lives in `.env` at the project root.
 | `DEV_GUILD_ID` | no | If set, slash commands sync only to this guild (instant). Leave blank for global sync. | `1234567890` |
 | `PROSPECT_PING_TIMES` | no | Comma-separated `HH:MM` clock times the recurring prospect nudge fires each day (only when prospect management is enabled). Default `09:00,21:00`. | `09:00,21:00` |
 | `PROSPECT_PING_TIMEZONE` | no | IANA timezone for `PROSPECT_PING_TIMES`, DST-aware. Default `America/Toronto` (Eastern). | `America/Toronto` |
+| `RECRUITMENT_GRADUATION_ENABLED` | no | If true (default), accepted applicants are kicked from the recruitment server once they join a community server or after `RECRUITMENT_GRADUATION_DAYS`, whichever is first. Set `false` to disable the kick (acceptance invites still expire). Requires Kick Members. | `true` |
+| `RECRUITMENT_GRADUATION_DAYS` | no | Days an accepted applicant has to join the community: the graduation timeout **and** the acceptance-invite `max_age`. Default `5` (Discord caps invite expiry at 7 days). | `5` |
 | `BOT_ACTIVITY_TYPE` | no | Presence verb: playing / watching / listening / competing. Default `watching`. | `watching` |
 | `BOT_ACTIVITY_TEXT` | no | Presence text shown after the verb. Default `for new applicants`. | `for new applicants` |
 | `DB_PATH` | no | Relative or absolute path for the SQLite database. | `data/applications.db` (default) |

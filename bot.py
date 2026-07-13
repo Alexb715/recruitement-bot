@@ -76,6 +76,8 @@ class RecruiterBot(commands.Bot):
                 db_path=self.config.db_path,
                 main_server_invite_channel_id=self.config.main_server_invite_channel_id,
                 opp_server_invite_channel_id=self.config.opp_server_invite_channel_id,
+                graduation_enabled=self.config.recruitment_graduation_enabled,
+                graduation_days=self.config.recruitment_graduation_days,
             )
         )
         await self.add_cog(

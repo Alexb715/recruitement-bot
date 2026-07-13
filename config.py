@@ -33,6 +33,13 @@ class Config:
     # Multi-server invites issued to accepted applicants.
     main_server_invite_channel_id: int | None
     opp_server_invite_channel_id: int | None
+    # Recruitment-server graduation: once an accepted applicant joins a community
+    # server (main/OPP) or `recruitment_graduation_days` pass since acceptance
+    # (whichever is first), they're kicked from the recruitment server so it stays
+    # a funnel. Requires Kick Members. Enabled by default; set the flag false to
+    # disable.
+    recruitment_graduation_enabled: bool
+    recruitment_graduation_days: int
     # Prospect management: recurring ping + inactivity auto-kick.
     prospect_management_enabled: bool
     prospect_role_id: int | None
@@ -158,6 +165,15 @@ def load_config() -> Config:
         dev_guild_id=_optional_int("DEV_GUILD_ID"),
         main_server_invite_channel_id=_optional_int("MAIN_SERVER_INVITE_CHANNEL_ID"),
         opp_server_invite_channel_id=_optional_int("OPP_SERVER_INVITE_CHANNEL_ID"),
+        recruitment_graduation_enabled=_optional_bool(
+            "RECRUITMENT_GRADUATION_ENABLED", True
+        ),
+        # Floor at 1 day: a 0/negative window would make the graduation cutoff
+        # land at/after now and kick every accepted member at once, and a 0-day
+        # invite max_age means "never expire" to Discord (the opposite of intent).
+        recruitment_graduation_days=max(
+            1, _optional_int_default("RECRUITMENT_GRADUATION_DAYS", 5)
+        ),
         prospect_management_enabled=_optional_bool("PROSPECT_MANAGEMENT_ENABLED", False),
         prospect_role_id=_optional_int("PROSPECT_ROLE_ID"),
         prospect_ping_channel_id=_optional_int("PROSPECT_PING_CHANNEL_ID"),

@@ -15,7 +15,9 @@ from content import (
     build_rejection_dm,
 )
 from db import (
+    accepted_users_decided_before,
     get_application,
+    latest_accepted_community_name,
     latest_rejection_for_user,
     save_application,
     set_application_decision,
@@ -28,6 +30,16 @@ logger = logging.getLogger(__name__)
 
 IDLE_TIMEOUT = timedelta(minutes=1)
 TIMEOUT_CHECK_SECONDS = 15
+
+# How often the recruitment-server graduation scan runs. Frequent enough to
+# action the day-based timeout promptly, infrequent enough to stay cheap.
+GRADUATION_SCAN_HOURS = 6
+
+SECONDS_PER_DAY = 24 * 60 * 60
+# Discord caps invite max_age at 7 days; acceptance invites expire after the
+# graduation window (clamped to this cap) so a stale invite can't be used once
+# the applicant's join window has closed.
+MAX_INVITE_AGE_SECONDS = 7 * SECONDS_PER_DAY
 
 START_BUTTON_CUSTOM_ID = "gorp:start_interview"
 START_KEYWORDS = {"apply", "start", "begin", "interview"}
@@ -50,6 +62,22 @@ INTERVIEW_INTRO_TEXT = (
     "first - once we begin, I'll only accept answers to the questions.\n\n"
     "Here we go!"
 )
+
+# Discord caps nicknames at 32 characters.
+NICK_MAX_LEN = 32
+
+
+def clean_nickname(community_name: str | None) -> str | None:
+    """Normalize a `community_name` answer into a Discord nickname, or None when
+    there's nothing usable. Callers MUST skip the rename on None - passing
+    ``nick=None`` to ``member.edit`` clears the member's existing nickname
+    instead of leaving it be."""
+    if not community_name:
+        return None
+    cleaned = community_name.strip()
+    if not cleaned:
+        return None
+    return cleaned[:NICK_MAX_LEN]
 
 
 class ApplyView(discord.ui.View):
@@ -235,6 +263,8 @@ class InterviewCog(commands.Cog):
         db_path: Path,
         main_server_invite_channel_id: int | None = None,
         opp_server_invite_channel_id: int | None = None,
+        graduation_enabled: bool = True,
+        graduation_days: int = 5,
     ) -> None:
         self.bot = bot
         self.results_channel_id = results_channel_id
@@ -242,11 +272,23 @@ class InterviewCog(commands.Cog):
         self.db_path = db_path
         self.main_server_invite_channel_id = main_server_invite_channel_id
         self.opp_server_invite_channel_id = opp_server_invite_channel_id
+        self.graduation_enabled = graduation_enabled
+        self.graduation_days = graduation_days
         self.sessions: dict[int, InterviewSession] = {}
+        # Guild ids derived (once) from the configured channels: the recruitment
+        # server hosts the interview/welcome DM; the community servers host the
+        # rename-on-join. Cached only on a successful resolve so a transient miss
+        # doesn't permanently disable the feature.
+        self._recruitment_guild_id_cache: int | None = None
+        self._community_guild_ids_cache: set[int] | None = None
         self.expire_idle_sessions.start()
+        if self.graduation_enabled:
+            self.graduate_accepted_members.start()
 
     def cog_unload(self) -> None:
         self.expire_idle_sessions.cancel()
+        if self.graduate_accepted_members.is_running():
+            self.graduate_accepted_members.cancel()
 
     @tasks.loop(seconds=TIMEOUT_CHECK_SECONDS)
     async def expire_idle_sessions(self) -> None:
@@ -271,10 +313,52 @@ class InterviewCog(commands.Cog):
     async def _before_expire(self) -> None:
         await self.bot.wait_until_ready()
 
+    @tasks.loop(hours=GRADUATION_SCAN_HOURS)
+    async def graduate_accepted_members(self) -> None:
+        """Time-based graduation trigger: remove accepted members from the
+        recruitment server once `graduation_days` have passed since their
+        acceptance and they're still lingering here. The join-based trigger in
+        `on_member_join` usually fires first; this is the backstop for those who
+        never join a community server. Idempotent - members already gone are
+        skipped."""
+        guild = await self._recruitment_guild()
+        if guild is None:
+            logger.warning(
+                "Recruitment guild not resolved; skipping graduation scan."
+            )
+            return
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self.graduation_days)
+        for user_id in accepted_users_decided_before(self.db_path, cutoff):
+            try:
+                uid = int(user_id)
+            except ValueError:
+                continue
+            member = guild.get_member(uid)
+            if member is not None:
+                await self._kick_from_recruitment(member)
+
+    @graduate_accepted_members.before_loop
+    async def _before_graduate(self) -> None:
+        await self.bot.wait_until_ready()
+
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
         if member.bot:
             return
+
+        recruitment_guild_id = await self._recruitment_guild_id()
+        if recruitment_guild_id is not None and member.guild.id == recruitment_guild_id:
+            await self._send_welcome_dm(member)
+            return
+
+        community_guild_ids = await self._community_guild_ids()
+        if member.guild.id in community_guild_ids:
+            await self._welcome_accepted_member(member)
+
+    async def _send_welcome_dm(self, member: discord.Member) -> None:
+        """DM a new recruitment-server member the interview prompt. Only used for
+        joins to the recruitment server - community-server joins are handled by
+        `_welcome_accepted_member` instead."""
         try:
             await member.send(WELCOME_DM_TEXT, view=ApplyView())
         except discord.Forbidden:
@@ -285,6 +369,165 @@ class InterviewCog(commands.Cog):
             )
         except discord.HTTPException as exc:
             logger.warning("Failed to DM new member %s: %s", member, exc)
+
+    async def _welcome_accepted_member(self, member: discord.Member) -> None:
+        """Handle an accepted applicant joining a community server (main/OPP):
+        set their nickname to their application `community_name`, then - the
+        join-based graduation trigger - remove them from the recruitment server.
+        A non-accepted joiner has no accepted application, so both are no-ops."""
+        community_name = latest_accepted_community_name(self.db_path, member.id)
+        if not community_name:
+            return
+        await self._apply_community_nickname(member, community_name)
+        if self.graduation_enabled:
+            await self._graduate_from_recruitment(member.id)
+
+    # --- guild resolution + membership actions ---------------------------
+
+    async def _resolve_guild_id(self, channel_id: int | None) -> int | None:
+        """Resolve the guild that owns `channel_id`, or None. Cache-first
+        `get_channel` with a `fetch_channel` fallback (the pattern used by
+        `_create_invite` and the bot's auto-post)."""
+        if not channel_id:
+            return None
+        try:
+            channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(
+                channel_id
+            )
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+            logger.warning(
+                "Could not resolve guild for channel %s (%s).", channel_id, exc
+            )
+            return None
+        guild = getattr(channel, "guild", None)
+        return guild.id if guild is not None else None
+
+    async def _recruitment_guild_id(self) -> int | None:
+        if self._recruitment_guild_id_cache is None:
+            self._recruitment_guild_id_cache = await self._resolve_guild_id(
+                self.results_channel_id
+            )
+        return self._recruitment_guild_id_cache
+
+    async def _recruitment_guild(self) -> discord.Guild | None:
+        guild_id = await self._recruitment_guild_id()
+        return self.bot.get_guild(guild_id) if guild_id is not None else None
+
+    async def _community_guild_ids(self) -> set[int]:
+        if self._community_guild_ids_cache is not None:
+            return self._community_guild_ids_cache
+        ids: set[int] = set()
+        for channel_id in (
+            self.main_server_invite_channel_id,
+            self.opp_server_invite_channel_id,
+        ):
+            guild_id = await self._resolve_guild_id(channel_id)
+            if guild_id is not None:
+                ids.add(guild_id)
+        # Latch only a non-empty result so a transient resolve failure doesn't
+        # permanently disable rename/graduation on join.
+        if ids:
+            self._community_guild_ids_cache = ids
+        return ids
+
+    async def _apply_community_nickname(
+        self, member: discord.Member, community_name: str | None
+    ) -> None:
+        """Set `member`'s nickname to their community name, degrading gracefully:
+        skips a blank name, the guild owner (Discord forbids renaming them), a
+        missing Manage Nicknames permission, and a no-op rename; logs (never
+        raises) on a hierarchy/permission Forbidden."""
+        nick = clean_nickname(community_name)
+        if nick is None:
+            return
+        guild = member.guild
+        if member.id == guild.owner_id:
+            logger.info(
+                "Not renaming guild owner %s in %s (Discord forbids it).",
+                member,
+                guild,
+            )
+            return
+        me = guild.me
+        if me is not None and not me.guild_permissions.manage_nicknames:
+            logger.warning(
+                "Missing Manage Nicknames in %s; cannot set nick for %s.",
+                guild,
+                member,
+            )
+            return
+        if member.nick == nick:
+            return
+        try:
+            await member.edit(
+                nick=nick, reason="Accepted GORP applicant community name"
+            )
+        except discord.Forbidden:
+            logger.warning(
+                "Forbidden setting nick for %s in %s (role hierarchy or permissions).",
+                member,
+                guild,
+            )
+        except discord.HTTPException as exc:
+            logger.warning("Failed to set nick for %s in %s: %s", member, guild, exc)
+        else:
+            logger.info("Set nickname %r for %s in %s.", nick, member, guild)
+
+    async def _graduate_from_recruitment(self, user_id: int) -> None:
+        """Join-based graduation trigger: if `user_id` is still in the recruitment
+        server, remove them (they've reached a community server)."""
+        guild = await self._recruitment_guild()
+        if guild is None:
+            return
+        member = guild.get_member(user_id)
+        if member is not None:
+            await self._kick_from_recruitment(member)
+
+    async def _kick_from_recruitment(self, member: discord.Member) -> None:
+        """Kick an accepted member from the recruitment server (silent, no DM).
+        Never touches staff or bots; logs (never raises) if the bot lacks Kick
+        Members or is below the member in the role hierarchy."""
+        if member.bot or member.guild_permissions.manage_guild:
+            return
+        try:
+            await member.kick(
+                reason="Accepted GORP applicant - graduated from recruitment server"
+            )
+        except discord.Forbidden:
+            logger.warning(
+                "No permission / hierarchy to graduate member %s (%d) from recruitment.",
+                member,
+                member.id,
+            )
+        except discord.HTTPException as exc:
+            logger.warning("Failed to graduate member %s: %s", member, exc)
+        else:
+            logger.info(
+                "Graduated accepted member %s (%d) from the recruitment server.",
+                member,
+                member.id,
+            )
+
+    async def _rename_applicant_in_recruitment(
+        self,
+        interaction: discord.Interaction,
+        applicant_id: int,
+        community_name: str | None,
+    ) -> None:
+        """Set an accepted applicant's nickname in the recruitment server at the
+        moment of acceptance. Resolves the applicant member from the interaction's
+        guild (get -> fetch fallback); no-ops outside a guild or if they've left."""
+        guild = interaction.guild
+        if guild is None:
+            return
+        member = guild.get_member(applicant_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(applicant_id)
+            except (discord.NotFound, discord.HTTPException):
+                member = None
+        if member is not None:
+            await self._apply_community_nickname(member, community_name)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -564,6 +807,14 @@ class InterviewCog(commands.Cog):
             return
 
         applicant_id = int(app["user_id"])
+
+        # Rename the applicant to their community name here in the recruitment
+        # server (they're already a member); the community servers are handled on
+        # join. interaction.user is the recruiter, so resolve the applicant.
+        await self._rename_applicant_in_recruitment(
+            interaction, applicant_id, app.get("answers", {}).get("community_name")
+        )
+
         departments = app.get("answers", {}).get("department", []) or []
         if isinstance(departments, str):
             departments = [departments]
@@ -579,6 +830,7 @@ class InterviewCog(commands.Cog):
             list(departments),
             main_invite_url=main_invite_url,
             opp_invite_url=opp_invite_url,
+            invite_expiry_days=self._invite_expiry_days(),
         )
         dm_status = await self._dm_applicant(applicant_id, dm_body)
         invite_bits: list[str] = []
@@ -676,14 +928,22 @@ class InterviewCog(commands.Cog):
             dm_status=dm_status,
         )
 
+    def _invite_expiry_days(self) -> int:
+        """Acceptance-invite lifetime in days: the graduation window, clamped to
+        Discord's 7-day invite max_age cap. Shared by the invite creation and the
+        acceptance DM so the promised expiry always matches the real one."""
+        return min(self.graduation_days, MAX_INVITE_AGE_SECONDS // SECONDS_PER_DAY)
+
     async def _create_invite(
         self, channel_id: int | None, label: str
     ) -> str | None:
-        """Create a single-use, non-expiring invite to `channel_id` (a channel in
-        one of the community servers the bot has been added to) and return its
-        URL. Degrades to None - logging a warning - when the channel isn't
-        configured, can't be reached, isn't a text channel, or the bot lacks the
-        Create Invite permission."""
+        """Create a single-use invite to `channel_id` (a channel in one of the
+        community servers the bot has been added to) that expires after the
+        graduation window, and return its URL. Expiring the invite makes it null
+        and void if the applicant doesn't join within `graduation_days`, matching
+        the recruitment-server graduation timeout. Degrades to None - logging a
+        warning - when the channel isn't configured, can't be reached, isn't a
+        text channel, or the bot lacks the Create Invite permission."""
         if not channel_id:
             return None
         try:
@@ -705,9 +965,10 @@ class InterviewCog(commands.Cog):
                 channel_id,
             )
             return None
+        max_age = self._invite_expiry_days() * SECONDS_PER_DAY
         try:
             invite = await channel.create_invite(
-                max_age=0,
+                max_age=max_age,
                 max_uses=1,
                 unique=True,
                 reason="Accepted GORP applicant",
