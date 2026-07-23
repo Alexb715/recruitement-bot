@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS applications (
     answers_json    TEXT    NOT NULL,
     decided_at      TEXT,
     decided_by      TEXT,
-    decision_reason TEXT
+    decision_reason TEXT,
+    results_message_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_applications_user_id
@@ -46,12 +47,18 @@ _DECISION_COLUMNS = (
     ("decision_reason", "TEXT"),
 )
 
+# Every column added to `applications` after its initial schema, applied via the
+# same defensive ALTER TABLE loop so pre-existing databases pick them up without
+# a migration step. `results_message_id` records the staff-channel message a
+# decision was posted to, so `/reverse-decision` can find and rebuild it.
+_ADDED_COLUMNS = _DECISION_COLUMNS + (("results_message_id", "TEXT"),)
+
 
 def init_db(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with _connect(db_path) as conn:
         conn.executescript(SCHEMA)
-        for column, ctype in _DECISION_COLUMNS:
+        for column, ctype in _ADDED_COLUMNS:
             try:
                 conn.execute(
                     f"ALTER TABLE applications ADD COLUMN {column} {ctype}"
@@ -150,6 +157,42 @@ def set_application_decision(
                 reason,
                 application_id,
             ),
+        )
+
+
+def clear_application_decision(db_path: Path, *, application_id: int) -> None:
+    """Undo a recorded decision: return the application to 'submitted' and null
+    every decision column. Flipping status alone already neutralizes the
+    status-keyed reads (reapply embargo, graduation scan, accept-time nickname),
+    but nulling decided_at/decided_by/decision_reason leaves the row
+    indistinguishable from a fresh submission so nothing downstream trips over a
+    stale decider or leftover reason. Used when staff reverse a mis-clicked
+    accept/reject so the application can be decided again. Clearing an unknown id
+    is a harmless no-op."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE applications
+            SET status = 'submitted',
+                decided_at = NULL,
+                decided_by = NULL,
+                decision_reason = NULL
+            WHERE id = ?
+            """,
+            (application_id,),
+        )
+
+
+def set_results_message_id(
+    db_path: Path, *, application_id: int, message_id: int
+) -> None:
+    """Record the staff-channel message id the application's results embed was
+    posted to, so `/reverse-decision` (which has no button to ride on) can fetch
+    and rebuild that message."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE applications SET results_message_id = ? WHERE id = ?",
+            (str(message_id), application_id),
         )
 
 

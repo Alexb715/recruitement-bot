@@ -13,6 +13,7 @@ from cogs.interview import (
     ApplyView,
     InterviewCog,
     RejectDecisionButton,
+    ReverseDecisionButton,
     build_apply_embed,
 )
 from cogs.prospects import ProspectsCog
@@ -67,7 +68,9 @@ class RecruiterBot(commands.Bot):
         init_db(self.config.db_path)
         self.add_view(ApplyView())
         self.add_view(TicketControlsView())
-        self.add_dynamic_items(AcceptDecisionButton, RejectDecisionButton)
+        self.add_dynamic_items(
+            AcceptDecisionButton, RejectDecisionButton, ReverseDecisionButton
+        )
         await self.add_cog(
             InterviewCog(
                 self,

@@ -94,6 +94,14 @@ When a recruiter clicks **Accept** on an application embed, the bot:
 2. Creates single-use invites to the main server (and the OPP server for OPP applicants) and DMs them, along with department orientation. The invites **expire after `RECRUITMENT_GRADUATION_DAYS`** (default 5), so an unused invite becomes void once the join window closes.
 3. **Graduates** the applicant off the recruitment server — kicking them once they join a community server, or after `RECRUITMENT_GRADUATION_DAYS`, whichever comes first — so the recruitment server stays a funnel. This is gated by `RECRUITMENT_GRADUATION_ENABLED` (default on), never touches staff/bots, and is independent of the separate prospect inactivity kick.
 
+### Reversing a decision
+
+Mis-clicked Accept or Reject? A decided embed now keeps a **Reverse decision** button (the Accept/Reject buttons are swapped for it once a decision is made). Clicking it asks for confirmation, then reopens the application: the row goes back to `submitted`, the embed rebuilds to its original **New Application** form, and the Accept/Reject buttons come back so it can be decided again. Reversing is staff-gated exactly like deciding (recruiter role or Manage Server) and is fully recoverable, since you can simply decide again.
+
+There is also a **`/reverse-decision <app id>`** slash command (Manage Server) for applications decided **before** this shipped, or whose staff message was deleted (the button only lands on newly decided embeds). Every application embed shows its number as **`App #<id>`** in the footer; that's the value you pass to the command.
+
+A few things reversing **cannot** undo: the acceptance/rejection DM already sent to the applicant, single-use invites already issued (they stay valid until they expire or are used), and a member already graduated (kicked) off the recruitment server. Reversing **is** enough to lift the 14-day reapply embargo and stop any pending graduation, since those key off the application status. Reversal itself sends the applicant nothing; the follow-up Accept/Reject DMs them as usual.
+
 ---
 
 ## Setup
@@ -228,6 +236,8 @@ To find a channel/role ID: enable **Developer Mode** in Discord (Settings → Ad
 | `/post-apply-message` | Manage Server | Posts the persistent Apply Here embed + button in the current channel. |
 | `/post-faq` | Manage Server | Posts the FAQ embed in the current channel. |
 | `/post-requirements` | Manage Server | Posts the Requirements embed in the current channel. |
+| `/reverse-decision <app id>` | Manage Server | Reopens a mis-decided application (back to `submitted`, Accept/Reject buttons restored). Fallback for the **Reverse decision** button; the `<app id>` is the `App #<id>` shown in the embed footer. |
+| `/delete-ticket` | Manage Channels | Permanently deletes the current Help/Inquiry ticket channel (run inside the ticket). |
 
 ---
 

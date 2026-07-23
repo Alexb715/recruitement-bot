@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 
 from cogs.inquiry import InquiryCog
@@ -16,11 +17,13 @@ from content import (
 )
 from db import (
     accepted_users_decided_before,
+    clear_application_decision,
     get_application,
     latest_accepted_community_name,
     latest_rejection_for_user,
     save_application,
     set_application_decision,
+    set_results_message_id,
     record_activity,
 )
 from questions import QUESTIONS, Question
@@ -147,6 +150,7 @@ def build_apply_embed() -> discord.Embed:
 
 ACCEPT_CUSTOM_ID_TEMPLATE = r"gorp:accept_app:(?P<app_id>\d+)"
 REJECT_CUSTOM_ID_TEMPLATE = r"gorp:reject_app:(?P<app_id>\d+)"
+REVERSE_CUSTOM_ID_TEMPLATE = r"gorp:reverse_app:(?P<app_id>\d+)"
 
 
 class AcceptDecisionButton(
@@ -220,6 +224,97 @@ def build_decision_view(app_id: int) -> discord.ui.View:
     view.add_item(AcceptDecisionButton(app_id))
     view.add_item(RejectDecisionButton(app_id))
     return view
+
+
+class ReverseDecisionButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=REVERSE_CUSTOM_ID_TEMPLATE,
+):
+    """Persistent 'Reverse decision' button attached to a *decided* staff embed.
+    Lets staff undo a mis-clicked accept/reject and reopen the application for a
+    fresh decision. Like the accept/reject buttons it's a DynamicItem so one
+    class serves every app_id and survives restarts once registered in bot.py."""
+
+    def __init__(self, app_id: int) -> None:
+        super().__init__(
+            discord.ui.Button(
+                label="Reverse decision",
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"gorp:reverse_app:{app_id}",
+            )
+        )
+        self.app_id = app_id
+
+    @classmethod
+    async def from_custom_id(
+        cls,
+        interaction: discord.Interaction,
+        item: discord.ui.Button,
+        match: re.Match[str],
+    ) -> "ReverseDecisionButton":
+        return cls(int(match["app_id"]))
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        cog = interaction.client.get_cog("InterviewCog")
+        if not isinstance(cog, InterviewCog):
+            await interaction.response.send_message(
+                "The interview system isn't available right now.", ephemeral=True
+            )
+            return
+        await cog.request_reverse(
+            interaction, self.app_id, source_message=interaction.message
+        )
+
+
+def build_reverse_view(app_id: int) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    view.add_item(ReverseDecisionButton(app_id))
+    return view
+
+
+class ConfirmReverseView(discord.ui.View):
+    """Ephemeral confirm/cancel shown after a reverse is requested, so a stray
+    click can't wipe a real decision (the recorded decider/reason). Transient
+    (not registered as persistent): it rides on an ephemeral message and only
+    needs to outlast the staff member's decision. `source_message` is the staff
+    embed for the button entry point, or None for the slash command (which
+    relocates the message from the stored id inside handle_reverse)."""
+
+    def __init__(
+        self, app_id: int, source_message: discord.Message | None
+    ) -> None:
+        super().__init__(timeout=60)
+        self.app_id = app_id
+        self.source_message = source_message
+
+    @discord.ui.button(
+        label="Reverse decision",
+        style=discord.ButtonStyle.danger,
+    )
+    async def confirm(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        cog = interaction.client.get_cog("InterviewCog")
+        if not isinstance(cog, InterviewCog):
+            await interaction.response.send_message(
+                "The interview system isn't available right now.", ephemeral=True
+            )
+            return
+        await cog.handle_reverse(
+            interaction, self.app_id, source_message=self.source_message
+        )
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.edit_message(
+            content="Reversal cancelled.", view=None
+        )
 
 
 class RejectReasonModal(discord.ui.Modal, title="Reject Application"):
@@ -720,7 +815,7 @@ class InterviewCog(commands.Cog):
         channel = self.bot.get_channel(self.results_channel_id)
         if channel is None:
             channel = await self.bot.fetch_channel(self.results_channel_id)
-        embed = self._build_embed(record)
+        embed = self._build_embed(record, app_id)
         content = (
             f"<@&{self.recruiter_role_id}> "
             f"New application from <@{record['user_id']}>"
@@ -734,7 +829,20 @@ class InterviewCog(commands.Cog):
         }
         if app_id is not None:
             kwargs["view"] = build_decision_view(app_id)
-        await channel.send(**kwargs)
+        message = await channel.send(**kwargs)
+        # Remember which message carries the decision so /reverse-decision can
+        # relocate and rebuild it later (the button rides on the message itself,
+        # but the slash command has only the app id to go on). Best-effort: a
+        # miss just means that one application can't be reversed via the command.
+        if app_id is not None:
+            try:
+                set_results_message_id(
+                    self.db_path, application_id=app_id, message_id=message.id
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to store results message id for app %s", app_id
+                )
 
     # --- Staff accept/reject handlers (invoked by DecisionView buttons) -----
 
@@ -843,6 +951,7 @@ class InterviewCog(commands.Cog):
 
         await self._finalize_decision_embed(
             interaction.message,
+            app_id=app_id,
             status="accepted",
             color=discord.Color.teal(),
             prefix=f"✅ Accepted by {interaction.user.mention}",
@@ -922,11 +1031,163 @@ class InterviewCog(commands.Cog):
             prefix = f"{prefix}\n**Reason:** {short}"
         await self._finalize_decision_embed(
             source_message,
+            app_id=app_id,
             status="rejected",
             color=discord.Color.red(),
             prefix=prefix,
             dm_status=dm_status,
         )
+
+    async def request_reverse(
+        self,
+        interaction: discord.Interaction,
+        app_id: int,
+        *,
+        source_message: discord.Message | None,
+    ) -> None:
+        """Shared entry point for the Reverse button and /reverse-decision. Gate
+        on recruiter + a currently-decided application, then pop an ephemeral
+        confirmation instead of reversing on the first click - a reverse wipes
+        the recorded decider and reason, so a stray click shouldn't do it."""
+        if not await self._check_recruiter(interaction):
+            return
+        app = get_application(self.db_path, app_id)
+        if app is None:
+            await interaction.response.send_message(
+                "I couldn't find that application in the database.",
+                ephemeral=True,
+            )
+            return
+        if app.get("status") == "submitted":
+            await interaction.response.send_message(
+                f"There's nothing to reverse - application #{app_id} is still "
+                "awaiting a decision.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            f"**Reverse the {app['status']} decision on application #{app_id}?** "
+            f"This reopens <@{app['user_id']}>'s application for a fresh decision "
+            "and clears the recorded decision and reason. The applicant isn't "
+            "notified, and any DM or invite already sent can't be recalled.",
+            view=ConfirmReverseView(app_id, source_message),
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    async def handle_reverse(
+        self,
+        interaction: discord.Interaction,
+        app_id: int,
+        *,
+        source_message: discord.Message | None,
+    ) -> None:
+        """Confirmed reverse: clear the decision and rebuild the staff message
+        back to its pristine 'New Application' form with the accept/reject
+        buttons restored, so it can be decided again. Re-checks the gate and the
+        state in case they changed while the confirmation sat open. Sends the
+        applicant nothing - reversal is a silent staff-side correction; the
+        follow-up accept/reject will DM them as usual."""
+        if not await self._check_recruiter(interaction):
+            return
+        app = get_application(self.db_path, app_id)
+        if app is None:
+            await interaction.response.edit_message(
+                content="I couldn't find that application in the database.",
+                view=None,
+            )
+            return
+        if app.get("status") == "submitted":
+            await interaction.response.edit_message(
+                content=(
+                    f"Application #{app_id} is already awaiting a decision - "
+                    "nothing to reverse."
+                ),
+                view=None,
+            )
+            return
+
+        try:
+            clear_application_decision(self.db_path, application_id=app_id)
+        except Exception:
+            logger.exception("Failed to clear decision for app %s", app_id)
+            await interaction.response.edit_message(
+                content="Database error reversing the decision. Try again.",
+                view=None,
+            )
+            return
+
+        message = source_message or await self._fetch_results_message(app)
+        rebuilt = False
+        if message is not None:
+            try:
+                await message.edit(
+                    content=(
+                        f"Reopened by {interaction.user.mention} · "
+                        f"application from <@{app['user_id']}>"
+                    ),
+                    embed=self._build_pristine_embed_from_stored(app, app_id),
+                    view=build_decision_view(app_id),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                rebuilt = True
+            except discord.HTTPException:
+                logger.exception(
+                    "Reversed app %s but failed to rebuild its message", app_id
+                )
+
+        if rebuilt:
+            note = (
+                f"Decision reversed - application #{app_id} is open for a new "
+                "decision."
+            )
+        else:
+            note = (
+                f"Decision reversed for application #{app_id}, but I couldn't "
+                "update its staff message (it may have been deleted). Re-post the "
+                "application if you need the accept/reject buttons back."
+            )
+        await interaction.response.edit_message(content=note, view=None)
+
+    async def _fetch_results_message(
+        self, app: dict
+    ) -> discord.Message | None:
+        """Relocate the staff-channel message an application's decision was
+        posted to, from the stored id. Returns None when no id was stored (e.g.
+        the application was decided before this feature) or the message/channel
+        is gone - the caller degrades to a 'couldn't update the message' note."""
+        raw_id = app.get("results_message_id")
+        if not raw_id:
+            return None
+        try:
+            channel = self.bot.get_channel(
+                self.results_channel_id
+            ) or await self.bot.fetch_channel(self.results_channel_id)
+            return await channel.fetch_message(int(raw_id))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return None
+        except (TypeError, ValueError):
+            return None
+
+    @app_commands.command(
+        name="reverse-decision",
+        description=(
+            "Reopen a mis-decided application so it can be decided again "
+            "(staff only)."
+        ),
+    )
+    @app_commands.describe(
+        app_id="The application number shown as 'App #…' in the results embed footer."
+    )
+    @app_commands.default_permissions(manage_guild=True)
+    async def reverse_decision_command(
+        self, interaction: discord.Interaction, app_id: int
+    ) -> None:
+        """Slash-command entry point. Unlike the Reverse button it works on any
+        decided application - including ones decided before that button existed -
+        because it relocates the staff message from the stored id rather than
+        riding on a component."""
+        await self.request_reverse(interaction, app_id, source_message=None)
 
     def _invite_expiry_days(self) -> int:
         """Acceptance-invite lifetime in days: the graduation window, clamped to
@@ -1007,6 +1268,7 @@ class InterviewCog(commands.Cog):
         self,
         message: discord.Message | None,
         *,
+        app_id: int,
         status: str,
         color: discord.Color,
         prefix: str,
@@ -1014,7 +1276,8 @@ class InterviewCog(commands.Cog):
     ) -> None:
         """Edit the original staff message: recolor the embed, prepend the
         decision banner to the description, append DM status to the footer, and
-        strip the buttons so the decision can't be reclicked."""
+        swap the accept/reject buttons for a single 'Reverse decision' button so
+        a mis-clicked decision can be undone (but not re-made) from the message."""
         try:
             if message is None:
                 return
@@ -1041,11 +1304,33 @@ class InterviewCog(commands.Cog):
                     " •"
                 )
             )
-            await message.edit(embed=new, view=None)
+            await message.edit(embed=new, view=build_reverse_view(app_id))
         except Exception:
             logger.exception("Failed to update decision embed")
 
-    def _build_embed(self, record: dict) -> discord.Embed:
+    def _build_pristine_embed_from_stored(
+        self, app: dict, app_id: int
+    ) -> discord.Embed:
+        """Rebuild the original 'New Application' embed from a stored application
+        row (as returned by get_application), for reopening a reversed decision.
+        Bridges two gaps so _build_embed can be reused unchanged: the DB has no
+        display_name column (it only ever lived on the in-memory session, so we
+        fall back to the stored username - the reopened title reads 'New
+        Application - <username>'), and started_at/completed_at come back as ISO
+        strings, which _build_embed consumes as datetimes."""
+        record = {
+            "user_id": app["user_id"],
+            "username": app["username"],
+            "display_name": app["username"],
+            "answers": app.get("answers", {}),
+            "started_at": datetime.fromisoformat(app["started_at"]),
+            "completed_at": datetime.fromisoformat(app["completed_at"]),
+        }
+        return self._build_embed(record, app_id)
+
+    def _build_embed(
+        self, record: dict, app_id: int | None = None
+    ) -> discord.Embed:
         answers = record["answers"]
         embed = discord.Embed(
             title=f"New Application - {record['display_name']}",
@@ -1074,5 +1359,8 @@ class InterviewCog(commands.Cog):
                 value=value,
                 inline=False,
             )
-        embed.set_footer(text=f"Started {record['started_at'].isoformat()}")
+        started = f"Started {record['started_at'].isoformat()}"
+        embed.set_footer(
+            text=f"App #{app_id} • {started}" if app_id is not None else started
+        )
         return embed
