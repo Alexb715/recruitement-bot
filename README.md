@@ -98,7 +98,9 @@ When a recruiter clicks **Accept** on an application embed, the bot:
 
 Mis-clicked Accept or Reject? A decided embed now keeps a **Reverse decision** button (the Accept/Reject buttons are swapped for it once a decision is made). Clicking it asks for confirmation, then reopens the application: the row goes back to `submitted`, the embed rebuilds to its original **New Application** form, and the Accept/Reject buttons come back so it can be decided again. Reversing is staff-gated exactly like deciding (recruiter role or Manage Server) and is fully recoverable, since you can simply decide again.
 
-There is also a **`/reverse-decision <app id>`** slash command (Manage Server) for applications decided **before** this shipped, or whose staff message was deleted (the button only lands on newly decided embeds). Every application embed shows its number as **`App #<id>`** in the footer; that's the value you pass to the command.
+There is also a **`/reverse-decision <app id>`** slash command (Manage Server) for applications decided **before** this shipped, or whose staff message was deleted (the button only lands on newly decided embeds). Every application embed shows its number as **`App #<id>`** in the footer; that's the value you pass to the command. When the original message can't be found, the command posts a fresh application embed (with working Accept/Reject buttons) to the results channel instead.
+
+If you need to bring back a `submitted` application whose embed is gone (for example one reversed earlier, before the command auto-reposted), run **`/repost-application <app id>`** (Manage Server). It posts a fresh, decidable embed to the results channel.
 
 A few things reversing **cannot** undo: the acceptance/rejection DM already sent to the applicant, single-use invites already issued (they stay valid until they expire or are used), and a member already graduated (kicked) off the recruitment server. Reversing **is** enough to lift the 14-day reapply embargo and stop any pending graduation, since those key off the application status. Reversal itself sends the applicant nothing; the follow-up Accept/Reject DMs them as usual.
 
@@ -236,7 +238,8 @@ To find a channel/role ID: enable **Developer Mode** in Discord (Settings → Ad
 | `/post-apply-message` | Manage Server | Posts the persistent Apply Here embed + button in the current channel. |
 | `/post-faq` | Manage Server | Posts the FAQ embed in the current channel. |
 | `/post-requirements` | Manage Server | Posts the Requirements embed in the current channel. |
-| `/reverse-decision <app id>` | Manage Server | Reopens a mis-decided application (back to `submitted`, Accept/Reject buttons restored). Fallback for the **Reverse decision** button; the `<app id>` is the `App #<id>` shown in the embed footer. |
+| `/reverse-decision <app id>` | Manage Server | Reopens a mis-decided application (back to `submitted`, Accept/Reject buttons restored). Fallback for the **Reverse decision** button; the `<app id>` is the `App #<id>` shown in the embed footer. Re-posts a fresh embed if the original is gone. |
+| `/repost-application <app id>` | Manage Server | Posts a fresh, decidable embed (Accept/Reject buttons) for a `submitted` application whose staff message is missing. |
 | `/delete-ticket` | Manage Channels | Permanently deletes the current Help/Inquiry ticket channel (run inside the ticket). |
 
 ---

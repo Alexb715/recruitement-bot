@@ -1142,11 +1142,22 @@ class InterviewCog(commands.Cog):
                 "decision."
             )
         else:
-            note = (
-                f"Decision reversed for application #{app_id}, but I couldn't "
-                "update its staff message (it may have been deleted). Re-post the "
-                "application if you need the accept/reject buttons back."
-            )
+            # The original staff message is gone (deleted, or decided before
+            # message ids were tracked), so post a fresh one to the results
+            # channel rather than leaving the application with no buttons.
+            reposted = await self._repost_decision_message(app, app_id)
+            if reposted is not None:
+                note = (
+                    f"Decision reversed - application #{app_id}'s original "
+                    "message was gone, so I posted a fresh one in the results "
+                    f"channel: {reposted.jump_url}"
+                )
+            else:
+                note = (
+                    f"Decision reversed for application #{app_id}, but I couldn't "
+                    "update or re-post its staff message. Check the results "
+                    "channel is configured and I can post there."
+                )
         await interaction.response.edit_message(content=note, view=None)
 
     async def _fetch_results_message(
@@ -1169,6 +1180,51 @@ class InterviewCog(commands.Cog):
         except (TypeError, ValueError):
             return None
 
+    async def _repost_decision_message(
+        self, app: dict, app_id: int
+    ) -> discord.Message | None:
+        """Post a fresh 'New Application' embed for a stored application to the
+        results channel, with the Accept/Reject buttons, and record its new
+        message id. Recovers an application whose original staff message is gone
+        (deleted, or decided before message ids were tracked) so it can be
+        decided again. Returns the new message, or None if the results channel
+        can't be reached or posted to."""
+        try:
+            channel = self.bot.get_channel(
+                self.results_channel_id
+            ) or await self.bot.fetch_channel(self.results_channel_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            logger.exception(
+                "Could not load results channel to re-post app %s", app_id
+            )
+            return None
+        if channel is None:
+            return None
+        try:
+            message = await channel.send(
+                content=(
+                    f"<@&{self.recruiter_role_id}> Re-posted application "
+                    f"#{app_id} from <@{app['user_id']}>, awaiting a decision"
+                ),
+                embed=self._build_pristine_embed_from_stored(app, app_id),
+                view=build_decision_view(app_id),
+                allowed_mentions=discord.AllowedMentions(
+                    roles=True, users=False, everyone=False
+                ),
+            )
+        except discord.HTTPException:
+            logger.exception("Failed to re-post app %s", app_id)
+            return None
+        try:
+            set_results_message_id(
+                self.db_path, application_id=app_id, message_id=message.id
+            )
+        except Exception:
+            logger.exception(
+                "Re-posted app %s but failed to store its new message id", app_id
+            )
+        return message
+
     @app_commands.command(
         name="reverse-decision",
         description=(
@@ -1188,6 +1244,53 @@ class InterviewCog(commands.Cog):
         because it relocates the staff message from the stored id rather than
         riding on a component."""
         await self.request_reverse(interaction, app_id, source_message=None)
+
+    @app_commands.command(
+        name="repost-application",
+        description=(
+            "Re-post a submitted application's embed with Accept/Reject buttons "
+            "(staff only)."
+        ),
+    )
+    @app_commands.describe(
+        app_id="The application number shown as 'App #…' in the results embed footer."
+    )
+    @app_commands.default_permissions(manage_guild=True)
+    async def repost_application_command(
+        self, interaction: discord.Interaction, app_id: int
+    ) -> None:
+        """Post a fresh, decidable embed for an application whose staff message is
+        gone - e.g. one reversed via /reverse-decision that couldn't be updated
+        in place. Only acts on `submitted` applications; a still-decided one keeps
+        its own message (reverse it first to redo it)."""
+        if not await self._check_recruiter(interaction):
+            return
+        app = get_application(self.db_path, app_id)
+        if app is None:
+            await interaction.response.send_message(
+                "I couldn't find that application in the database.",
+                ephemeral=True,
+            )
+            return
+        if app.get("status") != "submitted":
+            await interaction.response.send_message(
+                f"Application #{app_id} is currently {app['status']}, not awaiting "
+                "a decision. Use /reverse-decision first if you want to redo it.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        message = await self._repost_decision_message(app, app_id)
+        if message is None:
+            await interaction.followup.send(
+                "I couldn't post to the results channel. Check RESULTS_CHANNEL_ID "
+                "and that I can send messages there.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(
+            f"Re-posted application #{app_id}: {message.jump_url}", ephemeral=True
+        )
 
     def _invite_expiry_days(self) -> int:
         """Acceptance-invite lifetime in days: the graduation window, clamped to
