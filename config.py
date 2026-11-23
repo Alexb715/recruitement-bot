@@ -33,6 +33,12 @@ class Config:
     # Multi-server invites issued to accepted applicants.
     main_server_invite_channel_id: int | None
     opp_server_invite_channel_id: int | None
+    # Roles granted in the main server when an accepted applicant joins it: the
+    # access role goes to everyone, plus one role per department they picked
+    # (keyed by the department question's choice label). Requires Manage Roles
+    # and the bot's top role sitting above every one of these roles.
+    main_server_access_role_id: int | None
+    main_server_department_role_ids: dict[str, int]
     # Recruitment-server graduation: once an accepted applicant joins a community
     # server (main/OPP) or `recruitment_graduation_days` pass since acceptance
     # (whichever is first), they're kicked from the recruitment server so it stays
@@ -54,6 +60,16 @@ class Config:
     bot_activity_type: str
     bot_activity_text: str
     db_path: Path
+
+
+# Department choice label (as offered by the `department` question in
+# questions.py) -> env var holding that department's main-server role ID.
+DEPARTMENT_ROLE_ENV_VARS: dict[str, str] = {
+    "OPP": "MAIN_SERVER_OPP_ROLE_ID",
+    "Fire/EMS": "MAIN_SERVER_FIRE_EMS_ROLE_ID",
+    "Civilian Ops": "MAIN_SERVER_CIVILIAN_ROLE_ID",
+    "Communications": "MAIN_SERVER_COMMS_ROLE_ID",
+}
 
 
 def _require(name: str) -> str:
@@ -138,6 +154,17 @@ def parse_ping_times(raw: str, tz: ZoneInfo) -> tuple[time, ...]:
     return tuple(times)
 
 
+def _department_role_ids() -> dict[str, int]:
+    """Read the per-department main-server role IDs; a blank env var simply
+    leaves that department without an auto-assigned role."""
+    role_ids: dict[str, int] = {}
+    for department, env_var in DEPARTMENT_ROLE_ENV_VARS.items():
+        role_id = _optional_int(env_var)
+        if role_id is not None:
+            role_ids[department] = role_id
+    return role_ids
+
+
 def load_config() -> Config:
     db_path = Path(os.environ.get("DB_PATH", "data/applications.db"))
     if not db_path.is_absolute():
@@ -165,6 +192,8 @@ def load_config() -> Config:
         dev_guild_id=_optional_int("DEV_GUILD_ID"),
         main_server_invite_channel_id=_optional_int("MAIN_SERVER_INVITE_CHANNEL_ID"),
         opp_server_invite_channel_id=_optional_int("OPP_SERVER_INVITE_CHANNEL_ID"),
+        main_server_access_role_id=_optional_int("MAIN_SERVER_ACCESS_ROLE_ID"),
+        main_server_department_role_ids=_department_role_ids(),
         recruitment_graduation_enabled=_optional_bool(
             "RECRUITMENT_GRADUATION_ENABLED", True
         ),

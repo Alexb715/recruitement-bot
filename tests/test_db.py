@@ -12,6 +12,7 @@ from db import (
     clear_application_decision,
     get_application,
     init_db,
+    latest_accepted_answers,
     latest_accepted_community_name,
     latest_rejection_for_user,
     save_application,
@@ -66,6 +67,37 @@ def _reject(db_path, *, user_id, decided_at, reason="nope", username="user"):
         reason=reason,
     )
     return app_id
+
+
+# --- latest_accepted_answers -------------------------------------------------
+
+
+def test_latest_accepted_answers_returns_newest_accepted_answers(tmp_path):
+    db = tmp_path / "app.db"
+    init_db(db)
+    _accept(
+        db,
+        user_id=42,
+        community_name="Old Name",
+        decided_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    _accept(
+        db,
+        user_id=42,
+        community_name="New Name",
+        decided_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
+    )
+    assert latest_accepted_answers(db, 42) == {"community_name": "New Name"}
+
+
+def test_latest_accepted_answers_none_when_not_accepted(tmp_path):
+    db = tmp_path / "app.db"
+    init_db(db)
+    _submit(db, user_id=7, community_name="J. Smith", when=datetime.now(timezone.utc))
+    _reject(db, user_id=8, decided_at=datetime.now(timezone.utc))
+    assert latest_accepted_answers(db, 7) is None
+    assert latest_accepted_answers(db, 8) is None
+    assert latest_accepted_answers(db, 999) is None
 
 
 # --- latest_accepted_community_name -----------------------------------------

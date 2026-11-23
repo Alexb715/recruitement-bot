@@ -92,7 +92,8 @@ When a recruiter clicks **Accept** on an application embed, the bot:
 
 1. Sets the applicant's **nickname** to their "first initial + last name" answer, both in the recruitment server (immediately) and in the main / OPP servers when they join via their invite. Needs **Manage Nicknames** in those servers; it skips the server owner and logs (never crashes) if it lacks the permission or is below the member in the role hierarchy.
 2. Creates single-use invites to the main server (and the OPP server for OPP applicants) and DMs them, along with department orientation. The invites **expire after `RECRUITMENT_GRADUATION_DAYS`** (default 5), so an unused invite becomes void once the join window closes.
-3. **Graduates** the applicant off the recruitment server — kicking them once they join a community server, or after `RECRUITMENT_GRADUATION_DAYS`, whichever comes first — so the recruitment server stays a funnel. This is gated by `RECRUITMENT_GRADUATION_ENABLED` (default on), never touches staff/bots, and is independent of the separate prospect inactivity kick.
+3. Grants **main-server roles** when the applicant joins the main server: `MAIN_SERVER_ACCESS_ROLE_ID` for everyone, plus the role for each department they picked on the application (OPP, Fire/EMS, Communications, Civilian Ops). If the main server has rules screening, the roles are granted once they accept the rules, so the gate can't be skipped. Needs **Manage Roles** in the main server, with the bot's role **above** every one of those roles; it skips (and logs) any role it can't assign.
+4. **Graduates** the applicant off the recruitment server — kicking them once they join a community server, or after `RECRUITMENT_GRADUATION_DAYS`, whichever comes first — so the recruitment server stays a funnel. This is gated by `RECRUITMENT_GRADUATION_ENABLED` (default on), never touches staff/bots, and is independent of the separate prospect inactivity kick.
 
 ### Reversing a decision
 
@@ -124,8 +125,9 @@ A few things reversing **cannot** undo: the acceptance/rejection DM already sent
    - Mention `@everyone`, `@here`, and All Roles (needed to ping the recruiter role)
    - Create Instant Invite (to issue acceptance invites to the community servers)
    - Manage Nicknames (in the **main / OPP** servers — to rename accepted applicants to their community name)
+   - Manage Roles (in the **main** server — to grant accepted applicants their access + department roles; drag the bot's role above those roles)
    - Kick Members (in the **recruitment** server — for recruitment-server graduation)
-5. Use the generated URL to invite the bot to your server. If you run separate community (main / OPP) servers, invite the bot there too, with **Manage Nicknames**.
+5. Use the generated URL to invite the bot to your server. If you run separate community (main / OPP) servers, invite the bot there too, with **Manage Nicknames** (plus **Manage Roles** in the main server).
 
 ### 2. Install and configure
 
@@ -219,6 +221,13 @@ All configuration lives in `.env` at the project root.
 | `TICKET_CATEGORY_ID` | no | If set, enables the **Help / Inquiry** button: tickets are created as private channels under this category. Requires the bot to have Manage Channels + Manage Roles. Blank disables the button. | `1234567890` |
 | `TICKET_CLOSED_CATEGORY_ID` | no | Category a ticket is moved to when closed (opener access is revoked). Blank leaves closed tickets in place, renamed `closed-…`. | `1234567890` |
 | `DEV_GUILD_ID` | no | If set, slash commands sync only to this guild (instant). Leave blank for global sync. | `1234567890` |
+| `MAIN_SERVER_INVITE_CHANNEL_ID` | no | Channel in the main server that acceptance invites point to. Its server is also where main-server roles are granted. Blank disables the main-server invite. | `1234567890` |
+| `OPP_SERVER_INVITE_CHANNEL_ID` | no | Channel in the OPP server that OPP applicants' acceptance invites point to. Blank disables the OPP invite. | `1234567890` |
+| `MAIN_SERVER_ACCESS_ROLE_ID` | no | Main-server role granted to **every** accepted applicant when they join it. Blank skips it. | `1234567890` |
+| `MAIN_SERVER_OPP_ROLE_ID` | no | Main-server role granted to accepted applicants who picked **OPP**. | `664231740835102730` |
+| `MAIN_SERVER_FIRE_EMS_ROLE_ID` | no | Main-server role granted to accepted applicants who picked **Fire/EMS**. | `595292651092312070` |
+| `MAIN_SERVER_COMMS_ROLE_ID` | no | Main-server role granted to accepted applicants who picked **Communications** (PUCC). | `947590232465895516` |
+| `MAIN_SERVER_CIVILIAN_ROLE_ID` | no | Main-server role granted to accepted applicants who picked **Civilian Ops**. | `592782103632937005` |
 | `PROSPECT_PING_TIMES` | no | Comma-separated `HH:MM` clock times the recurring prospect nudge fires each day (only when prospect management is enabled). Default `09:00,21:00`. | `09:00,21:00` |
 | `PROSPECT_PING_TIMEZONE` | no | IANA timezone for `PROSPECT_PING_TIMES`, DST-aware. Default `America/Toronto` (Eastern). | `America/Toronto` |
 | `RECRUITMENT_GRADUATION_ENABLED` | no | If true (default), accepted applicants are kicked from the recruitment server once they join a community server or after `RECRUITMENT_GRADUATION_DAYS`, whichever is first. Set `false` to disable the kick (acceptance invites still expire). Requires Kick Members. | `true` |

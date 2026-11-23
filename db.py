@@ -213,13 +213,14 @@ def latest_rejection_for_user(
     return dict(row) if row is not None else None
 
 
-def latest_accepted_community_name(
+def latest_accepted_answers(
     db_path: Path, user_id: int
-) -> str | None:
-    """Return the `community_name` answer from this user's most recent ACCEPTED
-    application, or None if they have no accepted application (or it lacks a
-    usable community_name). Used to nickname accepted applicants when they join
-    a community server."""
+) -> dict[str, Any] | None:
+    """Return the answers dict from this user's most recent ACCEPTED
+    application, or None if they have no accepted application (or its answers
+    can't be decoded). Used when an accepted applicant joins a community server:
+    the nickname comes from `community_name` and the main-server roles from
+    `department`."""
     with _connect(db_path) as conn:
         row = conn.execute(
             """
@@ -236,6 +237,18 @@ def latest_accepted_community_name(
     try:
         answers = json.loads(row["answers_json"])
     except (ValueError, TypeError):
+        return None
+    return answers if isinstance(answers, dict) else None
+
+
+def latest_accepted_community_name(
+    db_path: Path, user_id: int
+) -> str | None:
+    """Return the `community_name` answer from this user's most recent ACCEPTED
+    application, or None if they have no accepted application (or it lacks a
+    usable community_name)."""
+    answers = latest_accepted_answers(db_path, user_id)
+    if answers is None:
         return None
     value = answers.get("community_name")
     if not isinstance(value, str):

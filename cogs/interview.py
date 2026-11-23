@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import discord
 from discord import app_commands
@@ -19,7 +21,7 @@ from db import (
     accepted_users_decided_before,
     clear_application_decision,
     get_application,
-    latest_accepted_community_name,
+    latest_accepted_answers,
     latest_rejection_for_user,
     save_application,
     set_application_decision,
@@ -81,6 +83,29 @@ def clean_nickname(community_name: str | None) -> str | None:
     if not cleaned:
         return None
     return cleaned[:NICK_MAX_LEN]
+
+
+def main_server_role_ids(
+    departments: Any,
+    access_role_id: int | None,
+    department_role_ids: Mapping[str, int],
+) -> list[int]:
+    """Role IDs to grant an accepted applicant in the main server: the access
+    role (when configured) plus the role of every department they picked that
+    has one configured. Tolerates a bare-string or missing `department` answer
+    and drops duplicates while keeping order."""
+    if isinstance(departments, str):
+        departments = [departments]
+    elif not isinstance(departments, (list, tuple)):
+        departments = []
+    role_ids: list[int] = []
+    if access_role_id is not None:
+        role_ids.append(access_role_id)
+    for department in departments:
+        role_id = department_role_ids.get(department)
+        if role_id is not None and role_id not in role_ids:
+            role_ids.append(role_id)
+    return role_ids
 
 
 class ApplyView(discord.ui.View):
@@ -358,6 +383,8 @@ class InterviewCog(commands.Cog):
         db_path: Path,
         main_server_invite_channel_id: int | None = None,
         opp_server_invite_channel_id: int | None = None,
+        main_server_access_role_id: int | None = None,
+        main_server_department_role_ids: Mapping[str, int] | None = None,
         graduation_enabled: bool = True,
         graduation_days: int = 5,
     ) -> None:
@@ -367,6 +394,10 @@ class InterviewCog(commands.Cog):
         self.db_path = db_path
         self.main_server_invite_channel_id = main_server_invite_channel_id
         self.opp_server_invite_channel_id = opp_server_invite_channel_id
+        self.main_server_access_role_id = main_server_access_role_id
+        self.main_server_department_role_ids = dict(
+            main_server_department_role_ids or {}
+        )
         self.graduation_enabled = graduation_enabled
         self.graduation_days = graduation_days
         self.sessions: dict[int, InterviewSession] = {}
@@ -376,6 +407,7 @@ class InterviewCog(commands.Cog):
         # doesn't permanently disable the feature.
         self._recruitment_guild_id_cache: int | None = None
         self._community_guild_ids_cache: set[int] | None = None
+        self._main_guild_id_cache: int | None = None
         self.expire_idle_sessions.start()
         if self.graduation_enabled:
             self.graduate_accepted_members.start()
@@ -467,15 +499,45 @@ class InterviewCog(commands.Cog):
 
     async def _welcome_accepted_member(self, member: discord.Member) -> None:
         """Handle an accepted applicant joining a community server (main/OPP):
-        set their nickname to their application `community_name`, then - the
+        set their nickname to their application `community_name`, grant their
+        access + department roles if this is the main server, then - the
         join-based graduation trigger - remove them from the recruitment server.
-        A non-accepted joiner has no accepted application, so both are no-ops."""
-        community_name = latest_accepted_community_name(self.db_path, member.id)
-        if not community_name:
+        A non-accepted joiner has no accepted application, so all are no-ops."""
+        answers = latest_accepted_answers(self.db_path, member.id)
+        if answers is None:
             return
-        await self._apply_community_nickname(member, community_name)
+        community_name = answers.get("community_name")
+        await self._apply_community_nickname(
+            member, community_name if isinstance(community_name, str) else None
+        )
+        if member.guild.id == await self._main_guild_id():
+            if member.pending:
+                # Granting a role to a member still on the Membership Screening
+                # (rules) gate lets them skip it, so hold off: on_member_update
+                # grants the roles once they accept the rules.
+                logger.info(
+                    "%s joined the main server pending screening; roles deferred.",
+                    member,
+                )
+            else:
+                await self._grant_main_server_roles(member, answers)
         if self.graduation_enabled:
             await self._graduate_from_recruitment(member.id)
+
+    @commands.Cog.listener()
+    async def on_member_update(
+        self, before: discord.Member, after: discord.Member
+    ) -> None:
+        """Finish the main-server role grant `_welcome_accepted_member` deferred
+        for an accepted applicant who joined while pending Membership Screening:
+        fires once they pass it (pending flips True -> False)."""
+        if after.bot or not before.pending or after.pending:
+            return
+        if after.guild.id != await self._main_guild_id():
+            return
+        answers = latest_accepted_answers(self.db_path, after.id)
+        if answers is not None:
+            await self._grant_main_server_roles(after, answers)
 
     # --- guild resolution + membership actions ---------------------------
 
@@ -524,6 +586,79 @@ class InterviewCog(commands.Cog):
         if ids:
             self._community_guild_ids_cache = ids
         return ids
+
+    async def _main_guild_id(self) -> int | None:
+        if self._main_guild_id_cache is None:
+            self._main_guild_id_cache = await self._resolve_guild_id(
+                self.main_server_invite_channel_id
+            )
+        return self._main_guild_id_cache
+
+    async def _grant_main_server_roles(
+        self, member: discord.Member, answers: Mapping[str, Any]
+    ) -> None:
+        """Give an accepted applicant the main-server access role plus the role
+        for each department they picked. Degrades gracefully: skips roles they
+        already hold, roles missing from this server, and roles the bot can't
+        assign (managed, or at/above its top role); logs (never raises) on a
+        missing Manage Roles permission or a Forbidden."""
+        role_ids = main_server_role_ids(
+            answers.get("department"),
+            self.main_server_access_role_id,
+            self.main_server_department_role_ids,
+        )
+        if not role_ids:
+            return
+        guild = member.guild
+        me = guild.me
+        if me is not None and not me.guild_permissions.manage_roles:
+            logger.warning(
+                "Missing Manage Roles in %s; cannot grant roles to %s.", guild, member
+            )
+            return
+        to_add: list[discord.Role] = []
+        for role_id in role_ids:
+            if member.get_role(role_id) is not None:
+                continue
+            role = guild.get_role(role_id)
+            if role is None:
+                logger.warning(
+                    "Role %d not found in %s; not granting it to %s.",
+                    role_id,
+                    guild,
+                    member,
+                )
+            elif not role.is_assignable():
+                logger.warning(
+                    "Can't assign role %s in %s (managed, or not below the bot's "
+                    "top role); not granting it to %s.",
+                    role,
+                    guild,
+                    member,
+                )
+            else:
+                to_add.append(role)
+        if not to_add:
+            return
+        try:
+            await member.add_roles(
+                *to_add, reason="Accepted GORP applicant - department roles"
+            )
+        except discord.Forbidden:
+            logger.warning(
+                "Forbidden granting roles to %s in %s (role hierarchy or permissions).",
+                member,
+                guild,
+            )
+        except discord.HTTPException as exc:
+            logger.warning("Failed to grant roles to %s in %s: %s", member, guild, exc)
+        else:
+            logger.info(
+                "Granted %s to %s in %s.",
+                ", ".join(role.name for role in to_add),
+                member,
+                guild,
+            )
 
     async def _apply_community_nickname(
         self, member: discord.Member, community_name: str | None
